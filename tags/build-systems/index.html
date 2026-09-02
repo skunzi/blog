@@ -47,6 +47,40 @@
   
 
   <link rel="stylesheet" href="/css/style.css">
+  
+  <script>
+  (function () {
+    var endpoint = "https://offclock-analytics.offclock.workers.dev/event";
+    var page = location.pathname;
+    var start = Date.now();
+    var hidden = 0;
+    var hiddenAt = 0;
+
+    function send(data) {
+      try { navigator.sendBeacon(endpoint, new Blob([JSON.stringify(data)], { type: "text/plain" })); } catch (e) {}
+    }
+
+    send({ t: "pv", p: page, r: document.referrer });
+
+    document.addEventListener("visibilitychange", function () {
+      if (document.hidden) {
+        hiddenAt = Date.now();
+        sendDuration();
+      } else if (hiddenAt) {
+        hidden += Date.now() - hiddenAt;
+        hiddenAt = 0;
+      }
+    });
+    window.addEventListener("pagehide", sendDuration);
+
+    function sendDuration() {
+      var h = hidden + (hiddenAt ? Date.now() - hiddenAt : 0);
+      var dur = Math.max(0, Math.round((Date.now() - start - h) / 1000));
+      send({ t: "leave", p: page, d: dur });
+    }
+  })();
+  </script>
+  
 </head>
 <body>
   <header>
