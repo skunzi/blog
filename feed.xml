@@ -1,0 +1,757 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xml:lang="en">
+  
+  <title>offclock / writing</title>
+  <subtitle>Deep dives into C++ debugging, ABI mismatches, linker behavior, and build system pitfalls.</subtitle>
+  <link href="https://blog.offclock.dev/feed.xml" rel="self" />
+  <link href="https://blog.offclock.dev/" />
+  <updated>2026-09-02T00:00:00Z</updated>
+  <id>https://blog.offclock.dev/</id>
+  <author>
+    <name>offclock</name>
+  </author>
+  <entry>
+    <title>The Segfault That Passed Code Review</title>
+    <link href="https://blog.offclock.dev/posts/abi-mismatch/" />
+    <updated>2026-08-09T00:00:00Z</updated>
+    <id>https://blog.offclock.dev/posts/abi-mismatch/</id>
+    <summary>How a stale Conan profile in our Bazel monorepo turned std::filesystem::path into a ticking time bomb.</summary>
+    <content type="html">&lt;p&gt;&lt;em&gt;How a Conan profile still set to &lt;code&gt;libstdc++&lt;/code&gt; in a &lt;code&gt;libstdc++11&lt;/code&gt; monorepo
+turned every &lt;code&gt;std::filesystem::path&lt;/code&gt; crossing a library boundary into a
+silent memory-layout disagreement, and why the segfault took weeks to find.&lt;/em&gt;&lt;/p&gt;
+&lt;h2&gt;The crash&lt;/h2&gt;
+&lt;pre&gt;&lt;code&gt;$ bazel test //services/ingest:config_parser_test
+...
+Signal: SIGSEGV (Segmentation fault)
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;No assertion failed. No sanitizer fired during the build. Just a clean
+segfault, not in a complex computation or a file operation, but in a
+destructor:&lt;/p&gt;
+&lt;pre class=&quot;language-cpp&quot;&gt;&lt;code class=&quot;language-cpp&quot;&gt;&lt;span class=&quot;token keyword&quot;&gt;void&lt;/span&gt; &lt;span class=&quot;token class-name&quot;&gt;ConfigParser&lt;/span&gt;&lt;span class=&quot;token double-colon punctuation&quot;&gt;::&lt;/span&gt;&lt;span class=&quot;token function&quot;&gt;loadFrom&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;token punctuation&quot;&gt;{&lt;/span&gt;
+    std&lt;span class=&quot;token double-colon punctuation&quot;&gt;::&lt;/span&gt;unique_ptr&lt;span class=&quot;token operator&quot;&gt;&amp;lt;&lt;/span&gt;std&lt;span class=&quot;token double-colon punctuation&quot;&gt;::&lt;/span&gt;filesystem&lt;span class=&quot;token double-colon punctuation&quot;&gt;::&lt;/span&gt;path&lt;span class=&quot;token operator&quot;&gt;&gt;&lt;/span&gt; &lt;span class=&quot;token function&quot;&gt;config_path&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;(&lt;/span&gt;
+        &lt;span class=&quot;token generic-function&quot;&gt;&lt;span class=&quot;token function&quot;&gt;static_cast&lt;/span&gt;&lt;span class=&quot;token generic class-name&quot;&gt;&lt;span class=&quot;token operator&quot;&gt;&amp;lt;&lt;/span&gt;std&lt;span class=&quot;token double-colon punctuation&quot;&gt;::&lt;/span&gt;filesystem&lt;span class=&quot;token double-colon punctuation&quot;&gt;::&lt;/span&gt;path&lt;span class=&quot;token operator&quot;&gt;*&lt;/span&gt;&lt;span class=&quot;token operator&quot;&gt;&gt;&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;(&lt;/span&gt;
+            &lt;span class=&quot;token function&quot;&gt;configlib_create_path&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;token string&quot;&gt;&quot;/usr/share/config/app.conf&quot;&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;)&lt;/span&gt;  &lt;span class=&quot;token comment&quot;&gt;// extern &quot;C&quot;&lt;/span&gt;
+        &lt;span class=&quot;token punctuation&quot;&gt;)&lt;/span&gt;
+    &lt;span class=&quot;token punctuation&quot;&gt;)&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;;&lt;/span&gt;
+
+    std&lt;span class=&quot;token double-colon punctuation&quot;&gt;::&lt;/span&gt;ifstream &lt;span class=&quot;token function&quot;&gt;file&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;(&lt;/span&gt;config_path&lt;span class=&quot;token operator&quot;&gt;-&gt;&lt;/span&gt;&lt;span class=&quot;token function&quot;&gt;c_str&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;)&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;)&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;;&lt;/span&gt;
+    &lt;span class=&quot;token comment&quot;&gt;// ... parse configuration ...&lt;/span&gt;
+&lt;span class=&quot;token punctuation&quot;&gt;}&lt;/span&gt;   &lt;span class=&quot;token comment&quot;&gt;// &amp;lt;-- SIGSEGV here, when unique_ptr runs the destructor&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;The path string was valid. The file was opened and read successfully. The
+crash came at scope exit, when the &lt;code&gt;unique_ptr&lt;/code&gt; ran the destructor on a
+perfectly ordinary-looking path object. Nothing about the code itself explained a
+crash, and nothing in the code review two weeks earlier had raised a flag.
+That&#39;s because the bug wasn&#39;t in the code. It was in how the code was
+&lt;em&gt;built&lt;/em&gt;.&lt;/p&gt;
+&lt;h2&gt;A field that wasn&#39;t there&lt;/h2&gt;
+&lt;p&gt;The backtrace was short and pointed deep inside the standard library:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;#0  std::filesystem::__cxx11::path::_List::_Impl_deleter::operator()() ()
+       from /lib/x86_64-linux-gnu/libstdc++.so.6
+#1  std::filesystem::__cxx11::path::_List::~_List() ()
+#2  std::filesystem::__cxx11::path::~path() ()
+#3  ConfigParser::loadFrom() ()
+       at config_parser.cpp:47
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;The crash was inside &lt;code&gt;~path()&lt;/code&gt;. C++ destroys members in reverse
+declaration order, so the destructor started with the last member:
+&lt;code&gt;_M_cmpts&lt;/code&gt;, the parsed-component storage. In the new ABI, &lt;code&gt;_M_cmpts&lt;/code&gt;
+sits at offset +32 inside the path object. But the library had built a
+16-byte old-ABI path. Offset +32 was 16 bytes past the end of the
+actual object. The destructor read whatever happened to be in adjacent
+memory, interpreted it as a &lt;code&gt;unique_ptr&amp;lt;_Impl&amp;gt;&lt;/code&gt; (a pointer to the
+component storage implementation), and tried to dereference it. The
+value there was &lt;code&gt;0x1a&lt;/code&gt; — unmapped memory. SIGSEGV.&lt;/p&gt;
+&lt;p&gt;In GDB, a raw dump of the memory at the path pointer showed what was
+happening:&lt;/p&gt;
+&lt;pre class=&quot;language-gdb&quot;&gt;&lt;code class=&quot;language-gdb&quot;&gt;(gdb) x/5gx config_path
+0x55a3e890:  0x000055a3e8c8  0x000055a3e8f0
+0x55a3e8a0:  0x0000000000000000  0x0000000000000041
+0x55a3e8b0:  0x000000000000001a&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;The first two quadwords (16 bytes) were the actual path object: a COW
+data pointer and the old-ABI &lt;code&gt;_M_cmpts&lt;/code&gt;. Everything after was outside
+the object — heap metadata and the start of the string&#39;s COW control
+block. The value at offset +32, &lt;code&gt;0x1a&lt;/code&gt; (26 decimal), was the COW
+block&#39;s &lt;code&gt;_M_length&lt;/code&gt; field — literally the string length of
+&amp;quot;/usr/share/config/app.conf&amp;quot;. The new-ABI destructor read that string
+length as a pointer and tried to follow it.&lt;/p&gt;
+&lt;p&gt;The question shifted from &amp;quot;what&#39;s wrong with the code&amp;quot; to &amp;quot;what&#39;s wrong
+with the &lt;em&gt;object&lt;/em&gt;.&amp;quot;&lt;/p&gt;
+&lt;h2&gt;The &lt;code&gt;sizeof&lt;/code&gt; that explained everything&lt;/h2&gt;
+&lt;p&gt;The next diagnostic was crude but decisive:&lt;/p&gt;
+&lt;pre class=&quot;language-cpp&quot;&gt;&lt;code class=&quot;language-cpp&quot;&gt;&lt;span class=&quot;token comment&quot;&gt;// Added to the test (compiled with GCC 12, libstdc++11):&lt;/span&gt;
+std&lt;span class=&quot;token double-colon punctuation&quot;&gt;::&lt;/span&gt;cerr &lt;span class=&quot;token operator&quot;&gt;&amp;lt;&amp;lt;&lt;/span&gt; &lt;span class=&quot;token string&quot;&gt;&quot;sizeof(path) in test: &quot;&lt;/span&gt; &lt;span class=&quot;token operator&quot;&gt;&amp;lt;&amp;lt;&lt;/span&gt; &lt;span class=&quot;token keyword&quot;&gt;sizeof&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;(&lt;/span&gt;std&lt;span class=&quot;token double-colon punctuation&quot;&gt;::&lt;/span&gt;filesystem&lt;span class=&quot;token double-colon punctuation&quot;&gt;::&lt;/span&gt;path&lt;span class=&quot;token punctuation&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;token operator&quot;&gt;&amp;lt;&amp;lt;&lt;/span&gt; &lt;span class=&quot;token string&quot;&gt;&quot;&#92;n&quot;&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;;&lt;/span&gt;
+
+&lt;span class=&quot;token comment&quot;&gt;// Added to the library that constructs the path (compiled with GCC 8, libstdc++):&lt;/span&gt;
+std&lt;span class=&quot;token double-colon punctuation&quot;&gt;::&lt;/span&gt;cerr &lt;span class=&quot;token operator&quot;&gt;&amp;lt;&amp;lt;&lt;/span&gt; &lt;span class=&quot;token string&quot;&gt;&quot;sizeof(path) in lib:  &quot;&lt;/span&gt; &lt;span class=&quot;token operator&quot;&gt;&amp;lt;&amp;lt;&lt;/span&gt; &lt;span class=&quot;token keyword&quot;&gt;sizeof&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;(&lt;/span&gt;std&lt;span class=&quot;token double-colon punctuation&quot;&gt;::&lt;/span&gt;filesystem&lt;span class=&quot;token double-colon punctuation&quot;&gt;::&lt;/span&gt;path&lt;span class=&quot;token punctuation&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;token operator&quot;&gt;&amp;lt;&amp;lt;&lt;/span&gt; &lt;span class=&quot;token string&quot;&gt;&quot;&#92;n&quot;&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;
+&lt;pre&gt;&lt;code&gt;sizeof(path) in test: 40
+sizeof(path) in lib:  16
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;Forty bytes versus sixteen. The library allocated a 16-byte old-ABI path.
+When the consumer&#39;s &lt;code&gt;unique_ptr&lt;/code&gt; went out of scope, it ran the new-ABI
+destructor, which expected a 40-byte object. The destructor tried to clean up &lt;code&gt;_M_cmpts&lt;/code&gt; at
+offset +32 — 16 bytes past the end of the real object — read garbage
+from adjacent memory, interpreted it as a pointer, and crashed
+dereferencing it. That&#39;s the crash.&lt;/p&gt;
+&lt;p&gt;The reason for the size difference is &lt;code&gt;std::string&lt;/code&gt;.
+&lt;code&gt;std::filesystem::path&lt;/code&gt; stores its pathname as a &lt;code&gt;std::string&lt;/code&gt;
+internally. And &lt;code&gt;std::string&lt;/code&gt; has two different memory layouts in
+libstdc++, controlled by the &lt;code&gt;_GLIBCXX_USE_CXX11_ABI&lt;/code&gt; macro (or, in
+Conan terms, the &lt;code&gt;compiler.libcxx&lt;/code&gt; setting).&lt;/p&gt;
+&lt;p&gt;The old layout (&lt;code&gt;libstdc++&lt;/code&gt;, &lt;code&gt;_GLIBCXX_USE_CXX11_ABI=0&lt;/code&gt;) uses
+copy-on-write (COW) with a single pointer to a heap-allocated control
+block. The new layout (&lt;code&gt;libstdc++11&lt;/code&gt;, &lt;code&gt;_GLIBCXX_USE_CXX11_ABI=1&lt;/code&gt;) uses
+the small string optimization (SSO) with inline storage for short
+strings:&lt;/p&gt;
+&lt;img src=&quot;https://blog.offclock.dev/posts/img/string-abi-layout.svg&quot; alt=&quot;Diagram comparing std::string memory layout under the old ABI (COW, 8 bytes: a single pointer to a heap-allocated length/capacity/refcount/data block) versus the new ABI (SSO, 32 bytes: pointer, length, and a union of an inline char buffer or capacity field)&quot;&gt;
+&lt;p&gt;These are different &lt;em&gt;sizes&lt;/em&gt;: 8 bytes versus 32 bytes on x86-64. You
+cannot hand one to code expecting the other. And since
+&lt;code&gt;std::filesystem::path&lt;/code&gt; contains a &lt;code&gt;std::string&lt;/code&gt;, the path inherits the
+mismatch:&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;&lt;/th&gt;
+&lt;th&gt;&lt;code&gt;libstdc++&lt;/code&gt; (old)&lt;/th&gt;
+&lt;th&gt;&lt;code&gt;libstdc++11&lt;/code&gt; (new)&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;_M_pathname&lt;/code&gt; (&lt;code&gt;std::string&lt;/code&gt;)&lt;/td&gt;
+&lt;td&gt;8 bytes&lt;/td&gt;
+&lt;td&gt;32 bytes&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;_M_cmpts&lt;/code&gt; (component storage)&lt;/td&gt;
+&lt;td&gt;8 bytes&lt;/td&gt;
+&lt;td&gt;8 bytes&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;strong&gt;Total &lt;code&gt;sizeof(path)&lt;/code&gt;&lt;/strong&gt;&lt;/td&gt;
+&lt;td&gt;&lt;strong&gt;16 bytes&lt;/strong&gt;&lt;/td&gt;
+&lt;td&gt;&lt;strong&gt;40 bytes&lt;/strong&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;That explained both the GDB output and the crash. The first 8 bytes of
+the old-ABI object were a heap pointer, which the new-ABI consumer also
+interpreted as a heap pointer (both ABIs store a pointer at offset 0). So
+GDB could read the actual string content. But bytes 8–15 of the old
+object, the component storage, were interpreted as the string &lt;em&gt;length&lt;/em&gt;,
+producing a nonsensical value in the trillions. And bytes 16–39, which
+the consumer expected to find, didn&#39;t belong to the path object at all.
+The destructor only needed to read &lt;code&gt;_M_cmpts&lt;/code&gt; at offset +32 to crash —
+the garbage there was a string length (26), which it dereferenced as a
+pointer to unmapped memory.&lt;/p&gt;
+&lt;h2&gt;Why the linker didn&#39;t save us&lt;/h2&gt;
+&lt;p&gt;libstdc++ has a safety mechanism for catching this kind of mismatch. New-ABI
+types like &lt;code&gt;std::string&lt;/code&gt; live in an inline namespace &lt;code&gt;__cxx11&lt;/code&gt;, so old-ABI
+and new-ABI strings mangle differently:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;Old ABI:  std::basic_string&amp;lt;char&amp;gt;
+New ABI:  std::__cxx11::basic_string&amp;lt;char&amp;gt;
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;If you try to link a function that takes &lt;code&gt;std::string&lt;/code&gt; across the ABI
+boundary, the linker rejects it with an undefined symbol error. Since
+GCC 11, &lt;code&gt;std::filesystem::path&lt;/code&gt; also lives in the &lt;code&gt;__cxx11&lt;/code&gt; namespace:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;Old ABI:  std::filesystem::path
+New ABI:  std::filesystem::__cxx11::path
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;A direct C++ function taking &lt;code&gt;const path&amp;amp;&lt;/code&gt; mangles differently between
+ABIs, and the linker would reject it.&lt;/p&gt;
+&lt;p&gt;But our Conan library&#39;s public API used C-linkage wrappers, a common
+pattern for packages intended to work across compiler versions. Path
+objects were returned through &lt;code&gt;extern &amp;quot;C&amp;quot;&lt;/code&gt; functions as opaque pointers
+and cast back to &lt;code&gt;std::filesystem::path*&lt;/code&gt; on the consumer side. C
+linkage strips all C++ type information from the symbol, so the linker
+saw matching, undecorated symbols on both sides and was satisfied. It
+had no way to know that the pointer referred to a 16-byte object the
+consumer would read as 40 bytes.&lt;/p&gt;
+&lt;p&gt;Link-time success only proves symbol compatibility. It does not prove
+ABI compatibility. In our case, the binary linked cleanly, ran
+successfully, and crashed in a destructor.&lt;/p&gt;
+&lt;h2&gt;A profile nobody remembered&lt;/h2&gt;
+&lt;p&gt;With the mechanism understood, the question was: &lt;em&gt;how did an old-ABI
+library end up in a new-ABI build?&lt;/em&gt;&lt;/p&gt;
+&lt;p&gt;The answer was in Conan. Our monorepo used Conan to manage a handful of
+external C++ dependencies. One of them, a configuration-file parser,
+depended on a utility library that exposed &lt;code&gt;std::filesystem::path&lt;/code&gt; in
+its API. The Conan profile used to build and cache these packages:&lt;/p&gt;
+&lt;pre class=&quot;language-ini&quot;&gt;&lt;code class=&quot;language-ini&quot;&gt;&lt;span class=&quot;token comment&quot;&gt;# conan_profile_legacy&lt;/span&gt;
+&lt;span class=&quot;token section&quot;&gt;&lt;span class=&quot;token punctuation&quot;&gt;[&lt;/span&gt;&lt;span class=&quot;token section-name selector&quot;&gt;settings&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;]&lt;/span&gt;&lt;/span&gt;
+&lt;span class=&quot;token key attr-name&quot;&gt;os&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;token value attr-value&quot;&gt;Linux&lt;/span&gt;
+&lt;span class=&quot;token key attr-name&quot;&gt;compiler&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;token value attr-value&quot;&gt;gcc&lt;/span&gt;
+&lt;span class=&quot;token key attr-name&quot;&gt;compiler.version&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;token value attr-value&quot;&gt;8&lt;/span&gt;
+&lt;span class=&quot;token key attr-name&quot;&gt;compiler.libcxx&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;token value attr-value&quot;&gt;libstdc++&lt;/span&gt;
+&lt;span class=&quot;token key attr-name&quot;&gt;build_type&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;token value attr-value&quot;&gt;Release&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;That &lt;code&gt;compiler.libcxx=libstdc++&lt;/code&gt; is the problem. It tells Conan to
+build with &lt;code&gt;_GLIBCXX_USE_CXX11_ABI=0&lt;/code&gt;: the old, COW-based string layout.
+The monorepo&#39;s own Bazel toolchain used GCC 12 with the default
+&lt;code&gt;libstdc++11&lt;/code&gt; (new ABI). No one had updated the Conan profile when the
+monorepo migrated compilers, because no one remembered it existed. The
+Conan packages were cached in the CI artifact store, built months ago,
+and just kept working until someone added a code path that passed a
+&lt;code&gt;std::filesystem::path&lt;/code&gt; across the boundary.&lt;/p&gt;
+&lt;p&gt;The misconfiguration had been latent the entire time. Simpler types
+like integers, plain structs, and C strings had crossed the C-linkage boundary
+without issue because their layouts don&#39;t change between ABIs. It was
+only when someone added a code path that passed a
+&lt;code&gt;std::filesystem::path&lt;/code&gt; through the opaque-pointer interface that the
+layout mismatch became a runtime fault.&lt;/p&gt;
+&lt;h2&gt;What we changed&lt;/h2&gt;
+&lt;p&gt;The immediate fix was one line: update the Conan profile.&lt;/p&gt;
+&lt;pre class=&quot;language-ini&quot;&gt;&lt;code class=&quot;language-ini&quot;&gt;&lt;span class=&quot;token comment&quot;&gt;# conan_profile (updated)&lt;/span&gt;
+&lt;span class=&quot;token section&quot;&gt;&lt;span class=&quot;token punctuation&quot;&gt;[&lt;/span&gt;&lt;span class=&quot;token section-name selector&quot;&gt;settings&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;]&lt;/span&gt;&lt;/span&gt;
+&lt;span class=&quot;token key attr-name&quot;&gt;os&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;token value attr-value&quot;&gt;Linux&lt;/span&gt;
+&lt;span class=&quot;token key attr-name&quot;&gt;compiler&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;token value attr-value&quot;&gt;gcc&lt;/span&gt;
+&lt;span class=&quot;token key attr-name&quot;&gt;compiler.version&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;token value attr-value&quot;&gt;12&lt;/span&gt;
+&lt;span class=&quot;token key attr-name&quot;&gt;compiler.libcxx&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;token value attr-value&quot;&gt;libstdc++11&lt;/span&gt;
+&lt;span class=&quot;token key attr-name&quot;&gt;build_type&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;=&lt;/span&gt;&lt;span class=&quot;token value attr-value&quot;&gt;Release&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;Rebuild and re-cache every Conan package. Segfault gone.&lt;/p&gt;
+&lt;p&gt;But &amp;quot;update the profile&amp;quot; is a fix for &lt;em&gt;this&lt;/em&gt; incident, not for the class
+of problem. Three things changed to make it harder for this to happen
+again:&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;A compile-time ABI canary.&lt;/strong&gt; A header shared between the Conan packages
+and the monorepo now checks both the compiler version and the ABI:&lt;/p&gt;
+&lt;pre class=&quot;language-cpp&quot;&gt;&lt;code class=&quot;language-cpp&quot;&gt;&lt;span class=&quot;token macro property&quot;&gt;&lt;span class=&quot;token directive-hash&quot;&gt;#&lt;/span&gt;&lt;span class=&quot;token directive keyword&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;token expression&quot;&gt;&lt;span class=&quot;token function&quot;&gt;defined&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;(&lt;/span&gt;__GNUC__&lt;span class=&quot;token punctuation&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;token operator&quot;&gt;&amp;amp;&amp;amp;&lt;/span&gt; __GNUC__ &lt;span class=&quot;token operator&quot;&gt;&amp;lt;&lt;/span&gt; &lt;span class=&quot;token number&quot;&gt;12&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;
+&lt;span class=&quot;token macro property&quot;&gt;&lt;span class=&quot;token directive-hash&quot;&gt;#&lt;/span&gt;&lt;span class=&quot;token directive keyword&quot;&gt;error&lt;/span&gt; &lt;span class=&quot;token string&quot;&gt;&quot;This library must be built with GCC 12+ to match the monorepo toolchain.&quot;&lt;/span&gt;&lt;/span&gt;
+&lt;span class=&quot;token macro property&quot;&gt;&lt;span class=&quot;token directive-hash&quot;&gt;#&lt;/span&gt;&lt;span class=&quot;token directive keyword&quot;&gt;endif&lt;/span&gt;&lt;/span&gt;
+
+&lt;span class=&quot;token macro property&quot;&gt;&lt;span class=&quot;token directive-hash&quot;&gt;#&lt;/span&gt;&lt;span class=&quot;token directive keyword&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;token expression&quot;&gt;_GLIBCXX_USE_CXX11_ABI &lt;span class=&quot;token operator&quot;&gt;!=&lt;/span&gt; &lt;span class=&quot;token number&quot;&gt;1&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;
+&lt;span class=&quot;token macro property&quot;&gt;&lt;span class=&quot;token directive-hash&quot;&gt;#&lt;/span&gt;&lt;span class=&quot;token directive keyword&quot;&gt;error&lt;/span&gt; &lt;span class=&quot;token string&quot;&gt;&quot;This library must be built with the C++11 ABI (compiler.libcxx=libstdc++11).&quot;&lt;/span&gt;&lt;/span&gt;
+&lt;span class=&quot;token macro property&quot;&gt;&lt;span class=&quot;token directive-hash&quot;&gt;#&lt;/span&gt;&lt;span class=&quot;token directive keyword&quot;&gt;endif&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;This turns a silent runtime segfault into a loud compile-time error.&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Profile generation from the toolchain.&lt;/strong&gt; The Conan profile is now
+generated from the same toolchain definition that Bazel uses, rather than
+being a hand-maintained file that can drift.&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;C types at package boundaries.&lt;/strong&gt; Where a Conan-provided library needs
+to exchange paths with the monorepo, the interface now uses
+&lt;code&gt;const char*&lt;/code&gt; rather than &lt;code&gt;std::filesystem::path&lt;/code&gt;. The conversion to
+&lt;code&gt;path&lt;/code&gt; happens on the caller&#39;s side, in code compiled with the caller&#39;s
+toolchain. This removes &lt;code&gt;path&lt;/code&gt; from the ABI surface entirely.&lt;/p&gt;
+&lt;h2&gt;What makes this class of bug hard&lt;/h2&gt;
+&lt;p&gt;Every defense you&#39;d normally rely on is absent:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;No compiler warning.&lt;/strong&gt; Both sides compile cleanly. The mismatch is
+between translation units that never see each other&#39;s source.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;No linker error.&lt;/strong&gt; The &lt;code&gt;__cxx11&lt;/code&gt; inline namespace catches ABI
+mismatches for types like &lt;code&gt;std::string&lt;/code&gt; and &lt;code&gt;std::filesystem::path&lt;/code&gt;
+in direct C++ function signatures. It cannot help when objects cross
+the boundary through C linkage, &lt;code&gt;dlopen&lt;/code&gt;, or type erasure.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;No sanitizer catch (by default).&lt;/strong&gt; ASan and UBSan instrument a
+single build. They don&#39;t detect layout disagreements between
+separately compiled artifacts unless you rebuild &lt;em&gt;everything&lt;/em&gt; under a
+single, consistent toolchain, which is exactly the thing that wasn&#39;t
+happening.&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;The crash is non-local.&lt;/strong&gt; The segfault occurs in the consumer, not
+in the producer. The library that built the wrong-layout object runs
+fine; it&#39;s the code that &lt;em&gt;reads&lt;/em&gt; the object under the wrong assumptions
+that dies.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;And even beyond the &lt;code&gt;libstdc++&lt;/code&gt; / &lt;code&gt;libstdc++11&lt;/code&gt; flag: &lt;code&gt;std::filesystem::path&lt;/code&gt;
+is not ABI-stable across libstdc++ versions at all. Its internal
+representation (the component storage, the parsing logic, the helper
+types) changed between GCC 8 and GCC 9 when the implementation moved
+from the separate &lt;code&gt;libstdc++fs&lt;/code&gt; static library into the main
+&lt;code&gt;libstdc++.so&lt;/code&gt;, and continued to evolve through GCC 11 and 12. Types
+like &lt;code&gt;std::string&lt;/code&gt; and &lt;code&gt;std::vector&lt;/code&gt; were explicitly frozen after the
+ABI transition, but &lt;code&gt;std::filesystem::path&lt;/code&gt;, &lt;code&gt;std::regex&lt;/code&gt;, and other
+newer types were not part of that freeze.&lt;/p&gt;
+&lt;p&gt;If your build system consumes prebuilt C++ binaries through Conan,
+vcpkg, system packages, or anything else, both the &lt;code&gt;libcxx&lt;/code&gt; setting
+&lt;em&gt;and&lt;/em&gt; the compiler version are load-bearing. Every unfrozen standard
+library type you expose across that boundary is a bet that both sides
+were built with the same libstdc++. When the bet is wrong, nothing tells
+you until a destructor reads a string length as a pointer and segfaults.&lt;/p&gt;
+&lt;h2&gt;Reproduction&lt;/h2&gt;
+&lt;p&gt;A self-contained reproduction of this crash is available in
+&lt;a href=&quot;https://github.com/the-offclock/abi-mismatch&quot;&gt;&lt;code&gt;the example implementation repo&lt;/code&gt;&lt;/a&gt;.&lt;/p&gt;
+&lt;p&gt;For a byte-level walkthrough of what happens in memory when the two ABI
+layouts collide, see the companion article:
+&lt;a href=&quot;https://blog.offclock.dev/posts/abi-mismatch-memory-behavior/&quot;&gt;ABI Mismatch Under the Hood&lt;/a&gt;.&lt;/p&gt;
+</content>
+  </entry>
+  <entry>
+    <title>ABI Mismatch Under the Hood</title>
+    <link href="https://blog.offclock.dev/posts/abi-mismatch-memory-behavior/" />
+    <updated>2026-08-16T00:00:00Z</updated>
+    <id>https://blog.offclock.dev/posts/abi-mismatch-memory-behavior/</id>
+    <summary>A byte-level walkthrough of how std::filesystem::path&#39;s memory layout differs between GCC ABI versions, and exactly why reading one layout as the other causes a segfault.</summary>
+    <content type="html">&lt;p&gt;&lt;em&gt;This is a companion to &lt;a href=&quot;https://blog.offclock.dev/posts/abi-mismatch/&quot;&gt;The Segfault That Passed Code Review&lt;/a&gt;.
+That article covers the debugging story and the Conan profile that caused it. This
+one goes deeper into the mechanics: what the compiler bakes into your binary, how
+the memory layouts differ byte by byte, and exactly what goes wrong when the two
+meet at runtime.&lt;/em&gt;&lt;/p&gt;
+&lt;h2&gt;How &lt;code&gt;std::filesystem&lt;/code&gt; is linked&lt;/h2&gt;
+&lt;p&gt;&lt;code&gt;std::filesystem&lt;/code&gt; didn&#39;t always live where it does today. Its home in libstdc++
+shifted between GCC 8 and GCC 9, and that shift matters for understanding
+what the runtime expects.&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;GCC 8:&lt;/strong&gt; The filesystem implementation shipped in a separate static library.
+You had to link it explicitly:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;g++ -std=c++17 main.cpp -lstdc++fs
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;&lt;code&gt;libstdc++fs.a&lt;/code&gt; was a static archive. When you linked against it, the
+compiled filesystem routines (including &lt;code&gt;parent_path()&lt;/code&gt;, &lt;code&gt;filename()&lt;/code&gt;, and the parser)
+were copied directly into your binary. Your executable carried its own
+private copy of the implementation, baked in at link time.&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;GCC 9 and later:&lt;/strong&gt; The implementation moved into the main shared library,
+&lt;code&gt;libstdc++.so&lt;/code&gt;. No extra flag needed:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;g++ -std=c++17 main.cpp    # links libstdc++.so automatically
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;The filesystem routines now live alongside &lt;code&gt;std::string&lt;/code&gt;, &lt;code&gt;std::vector&lt;/code&gt;,
+and everything else in the same shared library your binary loads at
+startup.&lt;/p&gt;
+&lt;p&gt;This transition matters. With GCC 8, the implementation of
+&lt;code&gt;parent_path()&lt;/code&gt; lives &lt;em&gt;in your binary&lt;/em&gt;, compiled when you compiled,
+with whatever ABI flags you used. With GCC 9+, &lt;code&gt;parent_path()&lt;/code&gt; lives &lt;em&gt;in
+the shared library on the system&lt;/em&gt;, compiled once with the ABI
+that the system&#39;s libstdc++ was built with. If your binary creates a
+&lt;code&gt;path&lt;/code&gt; object with one ABI and then hands it to a &lt;code&gt;libstdc++.so&lt;/code&gt; that
+was built with a different ABI, the two sides disagree on the object&#39;s
+memory layout. That disagreement is the root cause of the crash.&lt;/p&gt;
+&lt;h2&gt;What happens when you create a &lt;code&gt;path&lt;/code&gt; object&lt;/h2&gt;
+&lt;p&gt;When you write this:&lt;/p&gt;
+&lt;pre class=&quot;language-cpp&quot;&gt;&lt;code class=&quot;language-cpp&quot;&gt;std&lt;span class=&quot;token double-colon punctuation&quot;&gt;::&lt;/span&gt;filesystem&lt;span class=&quot;token double-colon punctuation&quot;&gt;::&lt;/span&gt;path &lt;span class=&quot;token function&quot;&gt;p&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;token string&quot;&gt;&quot;/usr/share/config/app.conf&quot;&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;)&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;several things are decided at compile time, before the program ever runs.&lt;/p&gt;
+&lt;h3&gt;The header defines the layout&lt;/h3&gt;
+&lt;p&gt;The compiler reads the &lt;code&gt;&amp;lt;filesystem&amp;gt;&lt;/code&gt; header, which includes
+&lt;code&gt;bits/fs_path.h&lt;/code&gt;. That header contains the class definition for
+&lt;code&gt;std::filesystem::path&lt;/code&gt;. Stripped to the essentials:&lt;/p&gt;
+&lt;pre class=&quot;language-cpp&quot;&gt;&lt;code class=&quot;language-cpp&quot;&gt;&lt;span class=&quot;token comment&quot;&gt;// Simplified from bits/fs_path.h&lt;/span&gt;
+&lt;span class=&quot;token keyword&quot;&gt;class&lt;/span&gt; &lt;span class=&quot;token class-name&quot;&gt;path&lt;/span&gt; &lt;span class=&quot;token punctuation&quot;&gt;{&lt;/span&gt;
+    &lt;span class=&quot;token comment&quot;&gt;// ...&lt;/span&gt;
+&lt;span class=&quot;token keyword&quot;&gt;private&lt;/span&gt;&lt;span class=&quot;token operator&quot;&gt;:&lt;/span&gt;
+    std&lt;span class=&quot;token double-colon punctuation&quot;&gt;::&lt;/span&gt;string  _M_pathname&lt;span class=&quot;token punctuation&quot;&gt;;&lt;/span&gt;   &lt;span class=&quot;token comment&quot;&gt;// the full path as a string&lt;/span&gt;
+    _List        _M_cmpts&lt;span class=&quot;token punctuation&quot;&gt;;&lt;/span&gt;      &lt;span class=&quot;token comment&quot;&gt;// parsed path components&lt;/span&gt;
+&lt;span class=&quot;token punctuation&quot;&gt;}&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;From this definition the compiler determines the &lt;strong&gt;exact byte-level
+layout&lt;/strong&gt; of the type: total size, offset of every field, alignment
+requirements. Not an approximation, but the precise numbers that will
+appear as constants in the generated machine code.&lt;/p&gt;
+&lt;p&gt;Since &lt;code&gt;path&lt;/code&gt; contains a &lt;code&gt;std::string&lt;/code&gt; as its first member, the layout
+of &lt;code&gt;path&lt;/code&gt; depends on the layout of &lt;code&gt;std::string&lt;/code&gt;. And &lt;code&gt;std::string&lt;/code&gt; has
+&lt;em&gt;two&lt;/em&gt; layouts in libstdc++, controlled by the &lt;code&gt;_GLIBCXX_USE_CXX11_ABI&lt;/code&gt;
+macro:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Old ABI&lt;/strong&gt; (&lt;code&gt;_GLIBCXX_USE_CXX11_ABI=0&lt;/code&gt;): &lt;code&gt;std::string&lt;/code&gt; is &lt;strong&gt;8 bytes&lt;/strong&gt;: a
+single pointer to a heap-allocated control block that stores the length,
+capacity, reference count, and character data together (copy-on-write).&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;New ABI&lt;/strong&gt; (&lt;code&gt;_GLIBCXX_USE_CXX11_ABI=1&lt;/code&gt;): &lt;code&gt;std::string&lt;/code&gt; is &lt;strong&gt;32 bytes&lt;/strong&gt;: a
+pointer, a length, and a union holding either a 16-byte inline character
+buffer or a capacity value (small-string optimization).&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Which layout the compiler uses depends entirely on which ABI flag was
+active when the header was parsed. The same header, the same field names,
+two completely different memory layouts.&lt;/p&gt;
+&lt;h3&gt;The layout is baked into your binary&lt;/h3&gt;
+&lt;p&gt;This is the critical point. The compiler does not generate code that asks
+&amp;quot;how big is &lt;code&gt;std::filesystem::path&lt;/code&gt;?&amp;quot; at runtime. It already knows. The
+size is a compile-time constant, fixed the moment the header was parsed.&lt;/p&gt;
+&lt;p&gt;Every operation the compiler generates (stack frame allocation, field
+access, copying, passing by reference) uses &lt;strong&gt;hardcoded offsets&lt;/strong&gt;
+derived from the header. If the header said &lt;code&gt;_M_cmpts&lt;/code&gt; is at offset 32
+(because the string before it occupies 32 bytes in the new ABI), then
+every access to &lt;code&gt;_M_cmpts&lt;/code&gt; in your binary will read from
+&lt;code&gt;start_of_object + 32&lt;/code&gt;. That offset is a literal number in the machine
+code. It will never change at runtime.&lt;/p&gt;
+&lt;img src=&quot;https://blog.offclock.dev/posts/img/path-compile-bake.svg&quot; alt=&quot;Diagram showing how the bits/fs_path.h header is compiled into a binary with hardcoded field offsets. The header defines the class with string and _List members; the compiler resolves these to concrete byte offsets (+0, +8, +16, +32) that become constants in the binary&#39;s machine code. sizeof(path) = 40 is fixed at compile time.&quot;&gt;
+&lt;p&gt;The constructor and destructor work the same way. They are defined in
+the header and typically inlined by the compiler. Your binary contains
+the constructor code that initializes each field at its expected offset,
+and the destructor code that tears down each field at its expected
+offset. Both are hardcoded to the layout the compiler saw.&lt;/p&gt;
+&lt;p&gt;This means your binary doesn&#39;t just know &lt;em&gt;how big&lt;/em&gt; a path object is. It
+knows exactly how to create one and how to destroy one, using the layout
+that was determined at compile time. If a different binary was compiled
+with different ABI flags, it will create and destroy path objects using
+a &lt;em&gt;different&lt;/em&gt; layout, and neither binary has any way to detect the
+mismatch at runtime.&lt;/p&gt;
+&lt;h2&gt;Two compilers, two layouts&lt;/h2&gt;
+&lt;p&gt;With that background, here is what concretely differs between a &lt;code&gt;path&lt;/code&gt;
+object compiled with the old ABI and the new ABI.&lt;/p&gt;
+&lt;h3&gt;Old ABI: GCC 8, &lt;code&gt;_GLIBCXX_USE_CXX11_ABI=0&lt;/code&gt;&lt;/h3&gt;
+&lt;pre&gt;&lt;code&gt;Offset   Size   Field
+──────   ────   ──────────────────────────
+  +0      8     _M_pathname  (COW pointer → heap block)
+  +8      8     _M_cmpts     (component storage)
+──────
+ 16 bytes total
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;&lt;code&gt;_M_pathname&lt;/code&gt; is a single 8-byte pointer. All the string metadata (length,
+capacity, and reference count) and the character data itself live in a single
+heap-allocated block that the pointer references.&lt;/p&gt;
+&lt;h3&gt;New ABI: GCC 12, &lt;code&gt;_GLIBCXX_USE_CXX11_ABI=1&lt;/code&gt;&lt;/h3&gt;
+&lt;pre&gt;&lt;code&gt;Offset   Size   Field
+──────   ────   ──────────────────────────
+  +0      8     _M_pathname.ptr      (pointer to char data)
+  +8      8     _M_pathname.length   (string length)
+ +16     16     _M_pathname.union    (inline buf[16] or capacity)
+ +32      8     _M_cmpts             (component storage)
+──────
+ 40 bytes total
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;&lt;code&gt;_M_pathname&lt;/code&gt; now stores its pointer, length, and either a 16-byte inline
+character buffer (for short strings ≤ 15 chars) or a heap capacity, all
+in 32 bytes, directly inside the path object.&lt;/p&gt;
+&lt;img src=&quot;https://blog.offclock.dev/posts/img/path-layout-comparison.svg&quot; alt=&quot;Side-by-side comparison of std::filesystem::path memory layout under old ABI (16 bytes: 8-byte COW pointer + 8-byte component storage) versus new ABI (40 bytes: 8-byte pointer + 8-byte length + 16-byte union for inline buffer or capacity + 8-byte component storage). The old ABI object ends at offset 16, less than half the size of the new ABI layout.&quot;&gt;
+&lt;p&gt;The two layouts are not compatible. They disagree on the size of the
+object, the offset of every field after the first, and how &lt;code&gt;std::string&lt;/code&gt;
+manages its memory internally. Code compiled against one layout cannot
+safely read or write an object created with the other.&lt;/p&gt;
+&lt;h2&gt;The collision: reading 40 bytes from a 16-byte object&lt;/h2&gt;
+&lt;p&gt;Here is the memory-level picture when the two ABIs collide. A shared
+library was compiled with the old ABI. It creates a
+&lt;code&gt;std::filesystem::path&lt;/code&gt; object of 16 bytes. Your binary was compiled
+with the new ABI. It receives a pointer to that object and interprets it
+as a 40-byte struct.&lt;/p&gt;
+&lt;p&gt;What does the binary see?&lt;/p&gt;
+&lt;img src=&quot;https://blog.offclock.dev/posts/img/mismatch-read.svg&quot; alt=&quot;Diagram showing a 16-byte old-ABI path object in memory, followed by adjacent unrelated memory. The new-ABI consumer reads 40 bytes from this location: bytes 0–7 (COW pointer) are roughly compatible with the expected ptr field; bytes 8–15 (_M_cmpts) are misinterpreted as string length, producing a value in the trillions; bytes 16–39 are outside the object entirely, reading whatever garbage happens to be in adjacent memory. 24 of 40 bytes the consumer reads are garbage.&quot;&gt;
+&lt;p&gt;Walking through each byte range:&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Bytes 0–7 (&lt;code&gt;_M_pathname.ptr&lt;/code&gt;):&lt;/strong&gt; Both ABIs store a pointer at
+offset 0. The old ABI&#39;s COW pointer happens to point to a heap block
+where the character data eventually sits (after the length, capacity,
+and refcount fields). This is not &lt;em&gt;identical&lt;/em&gt; to the new ABI&#39;s data
+pointer, but it&#39;s close enough that GDB can sometimes follow it and
+display the string content. Coincidental compatibility, not safety.&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Bytes 8–15 (&lt;code&gt;_M_pathname.length&lt;/code&gt;):&lt;/strong&gt; The new-ABI consumer reads
+these 8 bytes as the string&#39;s &lt;em&gt;length&lt;/em&gt;. But in the old-ABI object,
+bytes 8–15 are &lt;code&gt;_M_cmpts&lt;/code&gt;, the component storage pointer or
+small-buffer state. A heap address interpreted as a string length
+produces a number in the trillions. Any code that uses this length to
+iterate over the string will read far past the end of any valid buffer.&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Bytes 16–31 (&lt;code&gt;_M_pathname.union&lt;/code&gt;):&lt;/strong&gt; The consumer expects 16 bytes
+of inline string buffer or capacity here. But the old-ABI object is
+only 16 bytes long. These bytes don&#39;t belong to the &lt;code&gt;path&lt;/code&gt; object at
+all. They are whatever happens to sit in adjacent memory: another local
+variable, alignment padding, freed heap metadata, part of a different
+object. The content is uncontrolled and unpredictable.&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Bytes 32–39 (&lt;code&gt;_M_cmpts&lt;/code&gt;):&lt;/strong&gt; The consumer reads these 8 bytes as the
+component storage. Again, well outside the object. Pure garbage.&lt;/p&gt;
+&lt;p&gt;The binary is reading a 40-byte struct from a 16-byte region. The first
+8 bytes are roughly compatible by accident. The next 8 bytes are wildly
+misinterpreted. And the final 24 bytes are whatever happened to be
+adjacent in memory.&lt;/p&gt;
+&lt;h2&gt;What &lt;code&gt;libstdc++.so&lt;/code&gt; expects&lt;/h2&gt;
+&lt;p&gt;If the consumer calls a member function like &lt;code&gt;parent_path()&lt;/code&gt;, the call
+doesn&#39;t stay inside the binary. &lt;code&gt;parent_path()&lt;/code&gt; is implemented in
+&lt;code&gt;libstdc++.so&lt;/code&gt;, the system&#39;s shared C++ standard library. That shared
+library was built with the new ABI. It expects every &lt;code&gt;path&lt;/code&gt; object it
+receives to be 40 bytes laid out according to the new-ABI specification.&lt;/p&gt;
+&lt;p&gt;The call chain goes like this:&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;Your binary passes a &lt;code&gt;const path&amp;amp;&lt;/code&gt;, a pointer to what it believes
+is a 40-byte object&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;libstdc++.so&lt;/code&gt;&#39;s &lt;code&gt;parent_path()&lt;/code&gt; dereferences that pointer and reads
+the object&#39;s fields using new-ABI offsets&lt;/li&gt;
+&lt;li&gt;It reads &lt;code&gt;_M_pathname.length&lt;/code&gt; from offset +8 and gets a garbage value
+(it&#39;s actually the old-ABI &lt;code&gt;_M_cmpts&lt;/code&gt; field)&lt;/li&gt;
+&lt;li&gt;It reads &lt;code&gt;_M_cmpts&lt;/code&gt; from offset +32 and gets garbage (24 bytes past
+the end of the real object)&lt;/li&gt;
+&lt;li&gt;When it tries to use any of these values (iterating path components,
+reading the string, checking bounds), it dereferences invalid pointers
+or reads nonsensical lengths&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;The result is a SIGSEGV inside &lt;code&gt;libstdc++.so&lt;/code&gt;, in a function that is
+perfectly correct. The function is doing exactly what it should: reading
+fields at their documented offsets. The problem is that the object it
+received was built to a different blueprint.&lt;/p&gt;
+&lt;p&gt;But in the &lt;a href=&quot;https://blog.offclock.dev/posts/abi-mismatch/&quot;&gt;real-world incident&lt;/a&gt;, the crash didn&#39;t
+require a method call. It came from something more fundamental: the
+destructor.&lt;/p&gt;
+&lt;h2&gt;Why the destructor crashes&lt;/h2&gt;
+&lt;p&gt;Even if you never call &lt;code&gt;parent_path()&lt;/code&gt; or any other member function on
+the mismatched object, the destructor alone is enough to crash. Here&#39;s
+why.&lt;/p&gt;
+&lt;p&gt;C++ destroys class members in reverse declaration order. For
+&lt;code&gt;std::filesystem::path&lt;/code&gt;, the members are:&lt;/p&gt;
+&lt;pre class=&quot;language-cpp&quot;&gt;&lt;code class=&quot;language-cpp&quot;&gt;&lt;span class=&quot;token keyword&quot;&gt;class&lt;/span&gt; &lt;span class=&quot;token class-name&quot;&gt;path&lt;/span&gt; &lt;span class=&quot;token punctuation&quot;&gt;{&lt;/span&gt;
+    string_type _M_pathname&lt;span class=&quot;token punctuation&quot;&gt;;&lt;/span&gt;   &lt;span class=&quot;token comment&quot;&gt;// destroyed second&lt;/span&gt;
+    _List       _M_cmpts&lt;span class=&quot;token punctuation&quot;&gt;;&lt;/span&gt;      &lt;span class=&quot;token comment&quot;&gt;// destroyed first&lt;/span&gt;
+&lt;span class=&quot;token punctuation&quot;&gt;}&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;The destructor starts with &lt;code&gt;_M_cmpts&lt;/code&gt;. In the new-ABI layout, &lt;code&gt;_M_cmpts&lt;/code&gt;
+sits at offset +32. But the old-ABI object is only 16 bytes. Offset +32
+is 16 bytes past the end of the object.&lt;/p&gt;
+&lt;p&gt;When the new-ABI destructor runs on the old-ABI object:&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;It reads &lt;code&gt;_M_cmpts&lt;/code&gt; at offset +32. This is outside the object —
+whatever sits in adjacent memory is interpreted as a
+&lt;code&gt;unique_ptr&amp;lt;_Impl&amp;gt;&lt;/code&gt; (a pointer to the component list implementation)&lt;/li&gt;
+&lt;li&gt;If that garbage value is non-null, the &lt;code&gt;unique_ptr&lt;/code&gt;&#39;s destructor
+calls &lt;code&gt;_Impl_deleter::operator()&lt;/code&gt; on it — dereferencing a garbage
+pointer&lt;/li&gt;
+&lt;li&gt;SIGSEGV: the garbage pointer (in the real incident, &lt;code&gt;0x1a&lt;/code&gt; — a
+string length leaked from an adjacent COW control block) refers to
+unmapped memory&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;The destructor never even reaches &lt;code&gt;_M_pathname&lt;/code&gt;. It crashes on the first
+member it tries to destroy.&lt;/p&gt;
+&lt;p&gt;If the garbage at offset +32 happened to be zero (null pointer), the
+&lt;code&gt;unique_ptr&lt;/code&gt; destructor would skip the delete and proceed to
+&lt;code&gt;_M_pathname.~basic_string()&lt;/code&gt;. That destructor has its own mismatch
+problem: its SSO check compares the data pointer (at offset +0) against
+the inline buffer address (at offset +16) to decide whether to call
+&lt;code&gt;operator delete&lt;/code&gt;. The old-ABI COW pointer at offset +0 doesn&#39;t point
+to offset +16, so the destructor calls &lt;code&gt;free()&lt;/code&gt; on the COW pointer — an
+interior pointer into a control block, not a valid &lt;code&gt;free()&lt;/code&gt; argument.
+Either way, the program crashes.&lt;/p&gt;
+&lt;p&gt;This also explains why the crash is &lt;em&gt;non-local&lt;/em&gt;: the old-ABI library
+that created the object runs perfectly fine. Its destructor would have
+cleaned up the 16-byte object correctly using the old-ABI layout. But
+if the object crosses the boundary and the new-ABI consumer&#39;s destructor
+runs instead, that destructor operates on a layout it doesn&#39;t understand.
+The fault is at the boundary, not in either side&#39;s code.&lt;/p&gt;
+&lt;h2&gt;C++ types are not self-describing&lt;/h2&gt;
+&lt;p&gt;The fundamental issue is that C++ objects carry no runtime metadata about
+their layout. A &lt;code&gt;std::filesystem::path&lt;/code&gt; doesn&#39;t have a tag saying &amp;quot;I am
+16 bytes&amp;quot; or &amp;quot;I am 40 bytes.&amp;quot; The compiler bakes the layout into the
+consuming code, and the consuming code trusts that every object it
+receives matches that layout. There is no runtime check.&lt;/p&gt;
+&lt;p&gt;When two separately compiled binaries disagree on the layout, nothing
+catches the mismatch:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Not the compiler:&lt;/strong&gt; it only sees one translation unit at a time,
+and each side compiles cleanly against its own version of the header&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Not the linker:&lt;/strong&gt; it checks symbol names, not type layouts. If
+the symbol crosses through C linkage or &lt;code&gt;void*&lt;/code&gt;, the linker sees
+matching, undecorated symbols on both sides&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Not the runtime:&lt;/strong&gt; there is no layout metadata to compare. The
+pointer is dereferenced directly, using the baked-in offsets&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;This is why ABI mismatches are among the hardest bugs to find. The code
+is correct. The logic is correct. The types match in source. Everything
+compiles and links cleanly. And then a field access at the wrong offset
+segfaults, and the crash shows up inside &lt;code&gt;libstdc++.so&lt;/code&gt;, in code you
+didn&#39;t write and can&#39;t easily debug.&lt;/p&gt;
+&lt;p&gt;The defense is straightforward but requires discipline: build everything
+in the dependency tree (your own code, your third-party libraries, your
+prebuilt packages) with the same compiler, the same ABI flags, and the
+same standard library version. When that invariant breaks, the result is
+a silent, delayed, non-local segfault with no warning from any tool in
+the normal build pipeline. The &lt;a href=&quot;https://blog.offclock.dev/posts/abi-mismatch/&quot;&gt;companion article&lt;/a&gt;
+walks through a real-world case of this happening and what we did to
+prevent it from recurring.&lt;/p&gt;
+</content>
+  </entry>
+  <entry>
+    <title>The Static That Died Twice</title>
+    <link href="https://blog.offclock.dev/posts/the-static-that-died-twice/" />
+    <updated>2026-09-02T00:00:00Z</updated>
+    <id>https://blog.offclock.dev/posts/the-static-that-died-twice/</id>
+    <summary>A field report from debugging a double-free crash that only showed up after all tests had already passed.</summary>
+    <content type="html">&lt;p&gt;&lt;em&gt;A field report from debugging a &amp;quot;double free or corruption (!prev)&amp;quot; crash that only
+showed up after all tests had already passed.&lt;/em&gt;&lt;/p&gt;
+&lt;h2&gt;The log that shouldn&#39;t exist&lt;/h2&gt;
+&lt;pre&gt;&lt;code&gt;[==========] 24 tests from 1 test suite ran. (158 ms total)
+[  PASSED  ] 24 tests.
+double free or corruption (!prev)
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;Read that again. Every assertion passed. GoogleTest printed its green
+&lt;code&gt;PASSED&lt;/code&gt; banner. And then, with no test left running, the process reached
+for a chunk of heap memory that had already been freed, and aborted with
+exit code 134 (&lt;code&gt;SIGABRT&lt;/code&gt;). That was enough to make the Bazel test suite fail
+even though all tests had already passed.&lt;/p&gt;
+&lt;p&gt;There was no flaky assertion to blame, no obviously broken mock, not even a
+stack trace pointing at test code. Whatever was wrong lived &lt;em&gt;after&lt;/em&gt; the
+tests were over, in the machinery almost nobody ever looks at: global
+static teardown.&lt;/p&gt;
+&lt;p&gt;This is the story of tracking that crash down to its actual cause: a single
+class-static object that, thanks to how the build was wired up, existed
+&lt;strong&gt;twice&lt;/strong&gt; in the same process and got destroyed &lt;strong&gt;twice&lt;/strong&gt; at exit.&lt;/p&gt;
+&lt;h2&gt;TL;DR for the impatient&lt;/h2&gt;
+&lt;p&gt;The same small &amp;quot;settings&amp;quot; library got linked into one test binary through
+two different routes: once built from source into a shared library, once as
+a prebuilt static archive baked directly into the executable. A mutable,
+exported class-static object inside that library therefore existed as two
+physical copies, yet the dynamic linker&#39;s symbol resolution silently
+collapsed both copies onto a single address. Both copies&#39; constructors ran
+against that one address, and at shutdown both copies&#39; destructors ran
+against it too, freeing the same allocator buffer twice. Nobody wrote a bug
+to cause this. It was an emergent property of the build graph.&lt;/p&gt;
+&lt;h2&gt;Act 1: &amp;quot;It says PASSED, so why did CI go red?&amp;quot;&lt;/h2&gt;
+&lt;p&gt;The first reaction to a failure like this is disbelief. Exit code 134 means
+&lt;code&gt;SIGABRT&lt;/code&gt;, but every assertion in the test suite succeeded before it. The
+crash happens strictly &lt;em&gt;after&lt;/em&gt; &lt;code&gt;RUN_ALL_TESTS()&lt;/code&gt; has returned.&lt;/p&gt;
+&lt;p&gt;The instinctive first suspects were the usual ones: a use-after-free in test
+fixtures, a bad mock lifetime, maybe a threading issue at shutdown. All of
+those were ruled out quickly, because the crash reproduced identically as a
+&lt;strong&gt;single, deterministic, single-threaded&lt;/strong&gt; test with nothing exotic in it.
+That&#39;s a strong signal you&#39;re not looking at &amp;quot;normal&amp;quot; memory corruption.
+You&#39;re looking at something structural.&lt;/p&gt;
+&lt;h2&gt;Act 2: symbol table archaeology&lt;/h2&gt;
+&lt;p&gt;The binary in question is built from a large, modular C++ codebase, using a
+Bazel-like build system. Buried in its dependency graph is a small &amp;quot;settings&amp;quot;
+library (call it &lt;code&gt;SettingsEngine&lt;/code&gt;) used by dozens of other components to
+read configuration from JSON. &lt;code&gt;SettingsEngine&lt;/code&gt; ships a helper class,
+&lt;code&gt;DocumentReader&lt;/code&gt;, that keeps a &amp;quot;canonical empty document&amp;quot; around as a
+fallback value, backed by a small pooled allocator:&lt;/p&gt;
+&lt;pre class=&quot;language-cpp&quot;&gt;&lt;code class=&quot;language-cpp&quot;&gt;&lt;span class=&quot;token keyword&quot;&gt;class&lt;/span&gt; &lt;span class=&quot;token class-name&quot;&gt;DocumentReader&lt;/span&gt; &lt;span class=&quot;token punctuation&quot;&gt;{&lt;/span&gt;
+&lt;span class=&quot;token keyword&quot;&gt;public&lt;/span&gt;&lt;span class=&quot;token operator&quot;&gt;:&lt;/span&gt;
+    &lt;span class=&quot;token keyword&quot;&gt;static&lt;/span&gt; &lt;span class=&quot;token keyword&quot;&gt;const&lt;/span&gt; Document&lt;span class=&quot;token operator&quot;&gt;&amp;amp;&lt;/span&gt; &lt;span class=&quot;token function&quot;&gt;getEmptyDocument&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;)&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;;&lt;/span&gt;
+
+&lt;span class=&quot;token keyword&quot;&gt;private&lt;/span&gt;&lt;span class=&quot;token operator&quot;&gt;:&lt;/span&gt;
+    &lt;span class=&quot;token keyword&quot;&gt;static&lt;/span&gt; Document s_emptyDoc&lt;span class=&quot;token punctuation&quot;&gt;;&lt;/span&gt;   &lt;span class=&quot;token comment&quot;&gt;// owns a pooled allocator internally&lt;/span&gt;
+&lt;span class=&quot;token punctuation&quot;&gt;}&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;Nothing unusual there. This pattern exists in thousands of codebases. The
+next step was to stop guessing about test code and start reading the binary
+itself. &lt;code&gt;nm&lt;/code&gt; on the test executable and on every shared library it loads,
+grepping for that static:&lt;/p&gt;
+&lt;pre class=&quot;language-bash&quot;&gt;&lt;code class=&quot;language-bash&quot;&gt;$ nm &lt;span class=&quot;token parameter variable&quot;&gt;-CD&lt;/span&gt; ./test_binary            &lt;span class=&quot;token operator&quot;&gt;|&lt;/span&gt; &lt;span class=&quot;token function&quot;&gt;grep&lt;/span&gt; s_emptyDoc
+0000000000123456 B DocumentReader::s_emptyDoc
+
+$ nm &lt;span class=&quot;token parameter variable&quot;&gt;-CD&lt;/span&gt; libsettingsengine.so     &lt;span class=&quot;token operator&quot;&gt;|&lt;/span&gt; &lt;span class=&quot;token function&quot;&gt;grep&lt;/span&gt; s_emptyDoc
+0000000000034560 B DocumentReader::s_emptyDoc&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;Two hits. Both &lt;code&gt;B&lt;/code&gt; (bss, meaning uninitialized/zero-initialized static storage), in
+&lt;strong&gt;two different binary images&lt;/strong&gt;. That single observation reframed the whole
+investigation: this isn&#39;t a lifetime bug in test code, it&#39;s a &lt;strong&gt;duplicated
+global&lt;/strong&gt; across a shared library and the executable that statically links the
+same source.&lt;/p&gt;
+&lt;p&gt;A quick pass with &lt;code&gt;ldd&lt;/code&gt; and &lt;code&gt;strings&lt;/code&gt; over the executable confirmed the
+suspicion further: the same header/source pair for &lt;code&gt;DocumentReader&lt;/code&gt; had been
+compiled from &lt;strong&gt;two different physical locations on disk&lt;/strong&gt; (once from the
+monorepo checkout, once from an unpacked vendored binary package) and both
+copies had made it into the final link.&lt;/p&gt;
+&lt;p&gt;Pulling on that thread led straight to the dependency graph, and the actual
+source of the duplication: two unrelated build modules each declared their
+own dependency on &amp;quot;the settings engine&amp;quot; (one on the source repository, one
+on a prebuilt binary release of the &lt;em&gt;same&lt;/em&gt; library) and nothing in the
+build graph deduplicated them.&lt;/p&gt;
+&lt;img src=&quot;https://blog.offclock.dev/posts/img/dep-graph.svg&quot; alt=&quot;Dependency graph showing two paths into the test binary: one through a source-built shared library, one through a vendored prebuilt static archive, both containing the same SettingsEngine code&quot;&gt;
+&lt;p&gt;&lt;code&gt;DocumentReader.cpp&lt;/code&gt; was being compiled &lt;strong&gt;twice&lt;/strong&gt;, into two separate binary
+artifacts that both ended up loaded into the same process. That explains the
+two &lt;code&gt;nm&lt;/code&gt; hits, but not yet why destroying one of them would corrupt the
+other. For that, the backtrace of the crash itself was next.&lt;/p&gt;
+&lt;h2&gt;Act 3: the backtrace names the crime scene&lt;/h2&gt;
+&lt;p&gt;With a debug build in hand, the crash itself pointed straight at the
+destructor:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;#7  _int_free ()
+#8  __GI___libc_free ()
+#9  DocumentReader::~DocumentReader ()
+      -&amp;gt; code inside the TEST EXECUTABLE itself
+#10 __cxa_finalize (d=0x7ffff7dbd000)
+#11 libsettingsengine.so
+      -&amp;gt; destructor registration OWNED BY THE SHARED LIBRARY
+#13 _dl_fini ()
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;That is a strange stack: the destructor body executing is the copy compiled
+into the &lt;strong&gt;executable&lt;/strong&gt;, but it&#39;s being &lt;em&gt;invoked&lt;/em&gt; from the exit machinery that
+belongs to the &lt;strong&gt;shared library&lt;/strong&gt;. Two different modules, one function body,
+one call chain. That mismatch was the thread worth pulling.&lt;/p&gt;
+&lt;h2&gt;Act 4: the conditional breakpoint that made it undeniable&lt;/h2&gt;
+&lt;p&gt;At this point the working theory was: &amp;quot;there might be two objects being
+destroyed, and one of the destructions is invalid.&amp;quot; To prove it, the fix was
+to stop looking at code and start looking at &lt;em&gt;addresses&lt;/em&gt;, with a conditional
+breakpoint on the destructor, gated on the &lt;em&gt;specific instance&lt;/em&gt;:&lt;/p&gt;
+&lt;pre class=&quot;language-gdb&quot;&gt;&lt;code class=&quot;language-gdb&quot;&gt;break DocumentReader::~DocumentReader if $rdi == &amp;DocumentReader::s_emptyDoc
+run&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;The result settled the question completely:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;HIT #1  -- called from __run_exit_handlers   (executable&#39;s atexit chain)
+HIT #2  -- called from __cxa_finalize of the .so (shared library&#39;s teardown)
+
+double free or corruption (!prev)
+Program received signal SIGABRT, Aborted.
+
+TOTAL DESTRUCTOR CALLS ON THIS ADDRESS = 2
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;Both hits fired on the &lt;strong&gt;exact same address&lt;/strong&gt;. Not two different objects at
+two different addresses, but the &lt;em&gt;same&lt;/em&gt; object, destroyed twice, by two
+independent teardown mechanisms that both believed they owned it.&lt;/p&gt;
+&lt;h2&gt;The mechanism: how two objects become one&lt;/h2&gt;
+&lt;p&gt;This is the part that makes the bug genuinely interesting rather than &amp;quot;just
+a duplicate symbol.&amp;quot; If the executable and the shared library really had two
+independent, isolated copies of &lt;code&gt;s_emptyDoc&lt;/code&gt;, each would construct its own
+instance and destroy its own instance without any crash. The reason they instead
+collide on one address comes down to how position-independent shared
+libraries resolve global symbols.&lt;/p&gt;
+&lt;p&gt;Because the class-static has ordinary (exported) visibility and the shared
+library is compiled position-independent, &lt;em&gt;every&lt;/em&gt; access to &lt;code&gt;s_emptyDoc&lt;/code&gt;,
+even from the translation unit that defines it, goes through a level of
+indirection (the GOT), rather than a hard-coded address. This is required by
+the shared-library ABI: if some other module in the process were to override
+the symbol, all consumers, including the &amp;quot;owning&amp;quot; module, must observe the
+same, single, global definition. It&#39;s the exact mechanism that lets you
+override &lt;code&gt;malloc&lt;/code&gt; process-wide with &lt;code&gt;LD_PRELOAD&lt;/code&gt;.&lt;/p&gt;
+&lt;p&gt;When the same symbol name is exported by &lt;strong&gt;both&lt;/strong&gt; the executable and a
+shared library, the loader&#39;s global symbol resolution has to pick one
+winner for the whole process, and the executable&#39;s own definition
+consistently wins over anything a shared library brings in. So both GOT
+entries end up pointing at address &lt;code&gt;A&lt;/code&gt;, the executable&#39;s copy.
+Address &lt;code&gt;B&lt;/code&gt; still physically exists (that&#39;s the second &lt;code&gt;nm&lt;/code&gt; hit), but it&#39;s
+orphaned; nothing ever dereferences it through the normal symbol-based path.&lt;/p&gt;
+&lt;img src=&quot;https://blog.offclock.dev/posts/img/symbol-resolution.svg&quot; alt=&quot;Diagram showing the process address space: both the executable and the shared library have GOT entries for s_emptyDoc that resolve to the same address A. At shutdown, both teardown mechanisms call the destructor on that same address, causing a double free.&quot;&gt;
+&lt;p&gt;Two independent modules each believe they own a private static object. Both
+constructed &amp;quot;their&amp;quot; instance. Both registered a teardown callback for &amp;quot;their&amp;quot;
+instance. But symbol resolution silently made both callbacks target the same
+memory, so the allocator&#39;s internal chunk pointer gets freed once by the
+executable&#39;s teardown and then freed &lt;em&gt;again&lt;/em&gt; by the library&#39;s teardown.
+Classic double free, just arrived at through linkage rather than through
+application logic.&lt;/p&gt;
+&lt;h2&gt;Why this is sneaky&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;Every individual test passes. The corruption only manifests during global
+teardown, which almost nobody single-steps through.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;nm&lt;/code&gt; and &lt;code&gt;ldd&lt;/code&gt; look &amp;quot;normal&amp;quot; at a glance. Duplicate symbols across a
+static archive and a shared object are common and usually harmless (each
+module just uses its own copy). It&#39;s only &lt;em&gt;exported, mutable, class-static
+data&lt;/em&gt; that turns this into a landmine.&lt;/li&gt;
+&lt;li&gt;The bug isn&#39;t in any one team&#39;s code. &lt;code&gt;DocumentReader&lt;/code&gt; is fine in isolation.
+The test helper library is fine in isolation. The production populator
+libraries are fine in isolation. The defect is an emergent property of a
+build graph in which two independent dependency edges resolve to different
+builds (source vs. prebuilt binary) of the &lt;em&gt;same&lt;/em&gt; library.&lt;/li&gt;
+&lt;li&gt;The crash signature (&lt;code&gt;double free or corruption (!prev)&lt;/code&gt;) points you toward
+&amp;quot;someone freed a pointer twice,&amp;quot; which is true, but the actual bug is one
+level up: &amp;quot;someone constructed the &lt;em&gt;same static object&lt;/em&gt; twice, from two
+different modules, without either module knowing about the other.&amp;quot;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2&gt;Fixing it&lt;/h2&gt;
+&lt;p&gt;Two complementary fixes emerged:&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;Collapse the build graph.&lt;/strong&gt; Make sure only one dependency edge (source
+&lt;em&gt;or&lt;/em&gt; prebuilt, never both) ever reaches a given library inside one
+binary. This is the real fix: it removes the duplicate compilation
+entirely, so there is only ever one definition to link and one object to
+construct/destroy.&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;Harden the library against accidental double-linkage.&lt;/strong&gt; Replace the
+class-static object with a function-local &lt;code&gt;static&lt;/code&gt; inside an accessor
+function:&lt;/p&gt;
+&lt;pre class=&quot;language-cpp&quot;&gt;&lt;code class=&quot;language-cpp&quot;&gt;&lt;span class=&quot;token keyword&quot;&gt;const&lt;/span&gt; Document&lt;span class=&quot;token operator&quot;&gt;&amp;amp;&lt;/span&gt; &lt;span class=&quot;token class-name&quot;&gt;DocumentReader&lt;/span&gt;&lt;span class=&quot;token double-colon punctuation&quot;&gt;::&lt;/span&gt;&lt;span class=&quot;token function&quot;&gt;getEmptyDocument&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;token punctuation&quot;&gt;{&lt;/span&gt;
+    &lt;span class=&quot;token keyword&quot;&gt;static&lt;/span&gt; Document emptyDoc&lt;span class=&quot;token punctuation&quot;&gt;{&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;}&lt;/span&gt;&lt;span class=&quot;token punctuation&quot;&gt;;&lt;/span&gt;   &lt;span class=&quot;token comment&quot;&gt;// constructed on first call, once&lt;/span&gt;
+    &lt;span class=&quot;token keyword&quot;&gt;return&lt;/span&gt; emptyDoc&lt;span class=&quot;token punctuation&quot;&gt;;&lt;/span&gt;
+&lt;span class=&quot;token punctuation&quot;&gt;}&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;A function-local static&#39;s initialization guard variable is itself subject
+to the same GOT-based symbol resolution, so even if the function body
+ends up duplicated across a shared library and an executable, only one
+guard variable is ever live at the shared address, so construction (and the
+&lt;code&gt;__cxa_atexit&lt;/code&gt; registration that comes with it) happens exactly once,
+no matter how many times the containing library is accidentally linked
+into the same process. This doesn&#39;t fix the underlying build-graph
+duplication, but it makes the library itself immune to this entire class
+of crash.&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2&gt;Takeaways&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;If a process aborts with a memory-corruption signature strictly &lt;em&gt;after&lt;/em&gt;
+tests report success, look at global/static teardown, not your test code.&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;nm&lt;/code&gt;/&lt;code&gt;ldd&lt;/code&gt; across every loaded module is cheap and can immediately turn &amp;quot;a
+vague heap corruption&amp;quot; into &amp;quot;a duplicated symbol.&amp;quot;&lt;/li&gt;
+&lt;li&gt;A conditional GDB breakpoint keyed on a specific &lt;em&gt;address&lt;/em&gt; is the single
+most decisive tool for telling apart &amp;quot;two different objects&amp;quot; from &amp;quot;one
+object, destroyed twice.&amp;quot;&lt;/li&gt;
+&lt;li&gt;Mutable, exported class-static objects are quietly dangerous in any
+codebase where the same library can plausibly be linked in more than one
+form (source vs. prebuilt, static vs. shared) into the same binary.
+Prefer function-local statics, or avoid mutable global state entirely.&lt;/li&gt;
+&lt;li&gt;Fixing the symptom in the library (function-local static) and fixing the
+root cause in the build graph (deduplicate the dependency) are both
+worth doing: one makes the crash impossible, the other makes the
+duplication itself go away.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2&gt;Example implementation&lt;/h2&gt;
+&lt;p&gt;A simplified, self-contained reproduction of this issue is available at
+&lt;a href=&quot;https://github.com/the-offclock/static-double-free&quot;&gt;github.com/the-offclock/static-double-free&lt;/a&gt;.&lt;/p&gt;
+</content>
+  </entry>
+</feed>

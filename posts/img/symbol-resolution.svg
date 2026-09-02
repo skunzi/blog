@@ -1,0 +1,120 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 480" fill="none">
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    .label { fill: #c9d1d9; font-size: 12px; }
+    .label-sm { fill: #8b949e; font-size: 10px; }
+    .label-bold { fill: #c9d1d9; font-size: 12px; font-weight: 600; }
+    .label-mono { fill: #c9d1d9; font-size: 11px; font-family: "JetBrains Mono", "Fira Code", monospace; }
+    .accent { fill: #88f47d; font-size: 11px; font-weight: 500; }
+    .danger { fill: #f85149; font-size: 11px; font-weight: 600; }
+    .box { stroke: #30363d; stroke-width: 1.5; rx: 6; fill: #161b22; }
+    .region { stroke: #30363d; stroke-width: 1; rx: 4; fill: #0d1117; }
+    .arrow { stroke: #8b949e; stroke-width: 1.5; fill: none; marker-end: url(#arr); }
+    .arrow-got { stroke: #88f47d; stroke-width: 2; fill: none; marker-end: url(#arr-green); }
+    .arrow-red { stroke: #f85149; stroke-width: 1.5; stroke-dasharray: 5 3; fill: none; }
+    .obj { fill: #88f47d; }
+    .obj-dead { fill: #30363d; stroke: #8b949e; stroke-width: 1; stroke-dasharray: 3 2; }
+  </style>
+  <defs>
+    <marker id="arr" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+      <polygon points="0 0, 7 2.5, 0 5" fill="#8b949e"/>
+    </marker>
+    <marker id="arr-green" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+      <polygon points="0 0, 7 2.5, 0 5" fill="#88f47d"/>
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text class="label-bold" x="320" y="24" text-anchor="middle" font-size="13">Process Address Space After Loading</text>
+
+  <!-- Executable region -->
+  <rect class="region" x="30" y="40" width="270" height="190"/>
+  <text class="label-bold" x="165" y="60" text-anchor="middle">Executable</text>
+
+  <!-- Exe's .bss -->
+  <rect class="box" x="50" y="74" width="230" height="36"/>
+  <text class="label-mono" x="66" y="90">.bss:</text>
+  <text class="label-mono" x="106" y="90">s_emptyDoc</text>
+  <text class="accent" x="210" y="90">@ addr A</text>
+
+  <!-- Exe's object indicator -->
+  <rect class="obj" x="248" y="82" width="18" height="18" rx="9"/>
+
+  <!-- Exe's GOT -->
+  <rect class="box" x="50" y="124" width="230" height="36"/>
+  <text class="label-mono" x="66" y="142">GOT: s_emptyDoc</text>
+  <text class="accent" x="210" y="142">-> A</text>
+
+  <!-- Exe's exit handler -->
+  <rect class="box" x="50" y="174" width="230" height="36"/>
+  <text class="label-mono" x="66" y="192">atexit: dtor(</text>
+  <text class="accent" x="159" y="192">&amp;A</text>
+  <text class="label-mono" x="175" y="192">)</text>
+
+  <!-- Shared library region -->
+  <rect class="region" x="340" y="40" width="270" height="190"/>
+  <text class="label-bold" x="475" y="60" text-anchor="middle">libsettingsengine.so</text>
+
+  <!-- SO's .bss -->
+  <rect class="box" x="360" y="74" width="230" height="36"/>
+  <text class="label-mono" x="376" y="90">.bss:</text>
+  <text class="label-mono" x="416" y="90">s_emptyDoc</text>
+  <text class="label-sm" x="525" y="90">@ addr B</text>
+
+  <!-- SO's dead object indicator -->
+  <rect class="obj-dead" x="558" y="82" width="18" height="18" rx="9"/>
+
+  <!-- SO's GOT -->
+  <rect class="box" x="360" y="124" width="230" height="36"/>
+  <text class="label-mono" x="376" y="142">GOT: s_emptyDoc</text>
+  <text class="accent" x="520" y="142">-> A</text>
+
+  <!-- SO's finalize -->
+  <rect class="box" x="360" y="174" width="230" height="36"/>
+  <text class="label-mono" x="376" y="192">__cxa_finalize: dtor(</text>
+  <text class="accent" x="528" y="192">&amp;A</text>
+  <text class="label-mono" x="544" y="192">)</text>
+
+  <!-- GOT arrows pointing to addr A -->
+  <path class="arrow-got" d="M 165 124 C 165 112, 200 100, 248 92"/>
+  <path class="arrow-got" d="M 475 124 C 475 108, 400 80, 266 88"/>
+
+  <!-- "unused!" label on B -->
+  <text class="label-sm" x="575" y="78">(unused)</text>
+
+  <!-- Divider -->
+  <line x1="30" y1="255" x2="610" y2="255" stroke="#30363d" stroke-width="1"/>
+
+  <!-- Sequence diagram area -->
+  <text class="label-bold" x="320" y="278" text-anchor="middle" font-size="13">Startup / Shutdown Sequence</text>
+
+  <!-- Startup -->
+  <text class="label-bold" x="50" y="305">Startup:</text>
+
+  <rect x="50" y="314" width="540" height="26" rx="4" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+  <text class="label-mono" x="62" y="331">exe  static init</text>
+  <text class="label-sm" x="200" y="331">constructs object at</text>
+  <text class="accent" x="320" y="331">addr A</text>
+  <text class="label-sm" x="370" y="331">(via GOT -> A)</text>
+
+  <rect x="50" y="346" width="540" height="26" rx="4" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+  <text class="label-mono" x="62" y="363">.so  static init</text>
+  <text class="label-sm" x="200" y="363">constructs object at</text>
+  <text class="accent" x="320" y="363">addr A</text>
+  <text class="label-sm" x="370" y="363">(via GOT -> A, again!)</text>
+
+  <!-- Shutdown -->
+  <text class="label-bold" x="50" y="395">Shutdown:</text>
+
+  <rect x="50" y="404" width="540" height="26" rx="4" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+  <text class="label-mono" x="62" y="421">__run_exit_handlers</text>
+  <text class="label-sm" x="230" y="421">~DocumentReader() on</text>
+  <text class="accent" x="380" y="421">A</text>
+  <text class="label-sm" x="400" y="421">[frees chunk P]</text>
+
+  <rect x="50" y="436" width="540" height="26" rx="4" fill="#1c0b0b" stroke="#f85149" stroke-width="1.5"/>
+  <text class="label-mono" x="62" y="453">__cxa_finalize (.so)</text>
+  <text class="label-sm" x="230" y="453">~DocumentReader() on</text>
+  <text class="accent" x="380" y="453">A</text>
+  <text class="danger" x="400" y="453">[double free!]</text>
+</svg>

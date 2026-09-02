@@ -1,0 +1,103 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 410" fill="none">
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    .label { fill: #c9d1d9; font-size: 12px; }
+    .label-sm { fill: #8b949e; font-size: 10px; }
+    .label-bold { fill: #c9d1d9; font-size: 13px; font-weight: 600; }
+    .label-mono { fill: #c9d1d9; font-size: 11px; font-family: "JetBrains Mono", "Fira Code", monospace; }
+    .accent { fill: #88f47d; font-size: 11px; font-weight: 500; }
+    .accent-lg { fill: #88f47d; font-size: 13px; font-weight: 600; }
+    .danger { fill: #f85149; font-size: 11px; font-weight: 600; }
+    .blue { fill: #58a6ff; font-size: 11px; font-weight: 500; }
+    .region { stroke: #30363d; stroke-width: 1; rx: 6; fill: #0d1117; }
+    .field { stroke: #30363d; stroke-width: 1; fill: #161b22; rx: 3; }
+    .field-string { stroke: #3d5a3a; stroke-width: 1; fill: #1a2e1a; rx: 3; }
+    .offset { fill: #8b949e; font-size: 10px; font-family: "JetBrains Mono", "Fira Code", monospace; }
+  </style>
+
+  <!-- ==================== OLD ABI (left) ==================== -->
+  <rect class="region" x="20" y="10" width="290" height="390"/>
+  <text class="label-bold" x="165" y="34" text-anchor="middle">Old ABI (GCC 8)</text>
+  <text class="accent" x="165" y="52" text-anchor="middle">_GLIBCXX_USE_CXX11_ABI = 0</text>
+
+  <!-- _M_pathname (old string: 8 bytes) -->
+  <text class="label-sm" x="100" y="80">_M_pathname (std::string)</text>
+  <rect class="field-string" x="55" y="86" width="200" height="50"/>
+  <text class="label-mono" x="68" y="108">COW pointer</text>
+  <text class="label-sm" x="68" y="124">→ heap: len + cap + refcnt + data</text>
+  <text class="offset" x="40" y="108" text-anchor="end">+0</text>
+
+  <!-- Size label for string -->
+  <line x1="262" y1="86" x2="272" y2="86" stroke="#3d5a3a" stroke-width="1"/>
+  <line x1="272" y1="86" x2="272" y2="136" stroke="#3d5a3a" stroke-width="1"/>
+  <line x1="262" y1="136" x2="272" y2="136" stroke="#3d5a3a" stroke-width="1"/>
+  <text class="accent" x="280" y="116">8 B</text>
+
+  <!-- _M_cmpts -->
+  <text class="label-sm" x="100" y="156">_M_cmpts</text>
+  <rect class="field" x="55" y="162" width="200" height="50"/>
+  <text class="label-mono" x="68" y="184">component storage</text>
+  <text class="label-sm" x="68" y="200">parsed path segments</text>
+  <text class="offset" x="40" y="184" text-anchor="end">+8</text>
+
+  <!-- Total size -->
+  <rect x="55" y="235" width="200" height="36" rx="4" fill="#0f1a0f" stroke="#88f47d" stroke-width="1"/>
+  <text class="accent-lg" x="155" y="258" text-anchor="middle">sizeof(path) = 16</text>
+
+  <!-- End offset -->
+  <text class="offset" x="40" y="258" text-anchor="end">+16</text>
+
+  <!-- Dashed line showing where old ABI object ends -->
+  <line x1="20" y1="302" x2="310" y2="302" stroke="#f85149" stroke-width="1" stroke-dasharray="6 3"/>
+  <text class="danger" x="165" y="320" text-anchor="middle">object ends here</text>
+  <text class="label-sm" x="165" y="338" text-anchor="middle">only 16 bytes of real data</text>
+
+  <!-- ==================== NEW ABI (right) ==================== -->
+  <rect class="region" x="380" y="10" width="300" height="390"/>
+  <text class="label-bold" x="530" y="34" text-anchor="middle">New ABI (GCC 12)</text>
+  <text class="accent" x="530" y="52" text-anchor="middle">_GLIBCXX_USE_CXX11_ABI = 1</text>
+
+  <!-- _M_pathname (new string: 32 bytes) -->
+  <text class="label-sm" x="460" y="80">_M_pathname (std::string)</text>
+
+  <rect class="field-string" x="415" y="86" width="210" height="34"/>
+  <text class="label-mono" x="428" y="108">ptr → char data</text>
+  <text class="offset" x="400" y="108" text-anchor="end">+0</text>
+
+  <rect class="field-string" x="415" y="124" width="210" height="34"/>
+  <text class="label-mono" x="428" y="146">length</text>
+  <text class="offset" x="400" y="146" text-anchor="end">+8</text>
+
+  <!-- union -->
+  <rect x="415" y="162" width="210" height="72" rx="3" stroke="#3d5a3a" stroke-width="1" stroke-dasharray="4 2" fill="none"/>
+  <text class="blue" x="630" y="182">union</text>
+  <rect class="field-string" x="419" y="166" width="202" height="30" rx="2"/>
+  <text class="label-mono" x="432" y="186">char buf[16]</text>
+  <text class="label-sm" x="570" y="186">inline</text>
+  <rect class="field-string" x="419" y="200" width="202" height="30" rx="2"/>
+  <text class="label-mono" x="432" y="220">capacity</text>
+  <text class="offset" x="400" y="198" text-anchor="end">+16</text>
+
+  <!-- String size brace -->
+  <line x1="632" y1="86" x2="642" y2="86" stroke="#3d5a3a" stroke-width="1"/>
+  <line x1="642" y1="86" x2="642" y2="234" stroke="#3d5a3a" stroke-width="1"/>
+  <line x1="632" y1="234" x2="642" y2="234" stroke="#3d5a3a" stroke-width="1"/>
+  <text class="accent" x="650" y="164">32 B</text>
+
+  <!-- _M_cmpts -->
+  <text class="label-sm" x="460" y="254">_M_cmpts</text>
+  <rect class="field" x="415" y="260" width="210" height="34"/>
+  <text class="label-mono" x="428" y="282">component storage</text>
+  <text class="offset" x="400" y="282" text-anchor="end">+32</text>
+
+  <!-- Total size -->
+  <rect x="415" y="316" width="210" height="36" rx="4" fill="#0f1a0f" stroke="#88f47d" stroke-width="1"/>
+  <text class="accent-lg" x="520" y="339" text-anchor="middle">sizeof(path) = 40</text>
+
+  <!-- End offset -->
+  <text class="offset" x="400" y="339" text-anchor="end">+40</text>
+
+  <!-- Center divider -->
+  <line x1="345" y1="30" x2="345" y2="390" stroke="#21262d" stroke-width="1" stroke-dasharray="4 4"/>
+  <text class="label-sm" x="345" y="382" text-anchor="middle">vs.</text>
+</svg>

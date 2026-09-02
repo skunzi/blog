@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>The Segfault That Passed Code Review — offclock / writing</title>
+  <meta name="description" content="How a stale Conan profile in our Bazel monorepo turned std::filesystem::path into a ticking time bomb.">
+  <meta name="author" content="offclock">
+  <link rel="canonical" href="https://blog.offclock.dev/posts/abi-mismatch/">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="/apple-touch-icon.png">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+
+  <!-- RSS -->
+  <link rel="alternate" type="application/atom+xml" title="offclock / writing" href="/feed.xml">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="The Segfault That Passed Code Review">
+  <meta property="og:description" content="How a stale Conan profile in our Bazel monorepo turned std::filesystem::path into a ticking time bomb.">
+  <meta property="og:url" content="https://blog.offclock.dev/posts/abi-mismatch/">
+  <meta property="og:image" content="https://blog.offclock.dev/og-image.png">
+  <meta property="og:site_name" content="offclock / writing">
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="The Segfault That Passed Code Review">
+  <meta name="twitter:description" content="How a stale Conan profile in our Bazel monorepo turned std::filesystem::path into a ticking time bomb.">
+  <meta name="twitter:image" content="https://blog.offclock.dev/og-image.png">
+
+  
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BlogPosting",
+    "headline": "The Segfault That Passed Code Review",
+    "description": "How a stale Conan profile in our Bazel monorepo turned std::filesystem::path into a ticking time bomb.",
+    "datePublished": "2026-08-09T00:00:00.000Z",
+    "author": {
+      "@type": "Person",
+      "name": "offclock",
+      "url": "https://offclock.dev"
+    },
+    "publisher": {
+      "@type": "Person",
+      "name": "offclock",
+      "url": "https://offclock.dev"
+    },
+    "url": "https://blog.offclock.dev/posts/abi-mismatch/",
+    "mainEntityOfPage": "https://blog.offclock.dev/posts/abi-mismatch/"
+  }
+  </script>
+  
+
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <header>
+    <a href="/" class="site-logo"><img src="/logo.svg" alt="offclock / writing"></a>
+    <hr class="site-divider">
+    <nav class="site-nav">
+      <a href="/">writing</a>
+    </nav>
+  </header>
+  <main>
+    <article class="post">
+  <h1>The Segfault That Passed Code Review</h1>
+  <div class="post-meta">
+    <time datetime="2026-08-09T00:00:00.000Z">AUG 09, 2026</time>
+    <span class="reading-time">9 min read</span>
+  </div>
+  <p><em>How a Conan profile still set to <code>libstdc++</code> in a <code>libstdc++11</code> monorepo
+turned every <code>std::filesystem::path</code> crossing a library boundary into a
+silent memory-layout disagreement, and why the segfault took weeks to find.</em></p>
+<h2>The crash</h2>
+<pre><code>$ bazel test //services/ingest:config_parser_test
+...
+Signal: SIGSEGV (Segmentation fault)
+</code></pre>
+<p>No assertion failed. No sanitizer fired during the build. Just a clean
+segfault, not in a complex computation or a file operation, but in a
+destructor:</p>
+<pre class="language-cpp"><code class="language-cpp"><span class="token keyword">void</span> <span class="token class-name">ConfigParser</span><span class="token double-colon punctuation">::</span><span class="token function">loadFrom</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{</span>
+    std<span class="token double-colon punctuation">::</span>unique_ptr<span class="token operator">&lt;</span>std<span class="token double-colon punctuation">::</span>filesystem<span class="token double-colon punctuation">::</span>path<span class="token operator">></span> <span class="token function">config_path</span><span class="token punctuation">(</span>
+        <span class="token generic-function"><span class="token function">static_cast</span><span class="token generic class-name"><span class="token operator">&lt;</span>std<span class="token double-colon punctuation">::</span>filesystem<span class="token double-colon punctuation">::</span>path<span class="token operator">*</span><span class="token operator">></span></span></span><span class="token punctuation">(</span>
+            <span class="token function">configlib_create_path</span><span class="token punctuation">(</span><span class="token string">"/usr/share/config/app.conf"</span><span class="token punctuation">)</span>  <span class="token comment">// extern "C"</span>
+        <span class="token punctuation">)</span>
+    <span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    std<span class="token double-colon punctuation">::</span>ifstream <span class="token function">file</span><span class="token punctuation">(</span>config_path<span class="token operator">-></span><span class="token function">c_str</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// ... parse configuration ...</span>
+<span class="token punctuation">}</span>   <span class="token comment">// &lt;-- SIGSEGV here, when unique_ptr runs the destructor</span></code></pre>
+<p>The path string was valid. The file was opened and read successfully. The
+crash came at scope exit, when the <code>unique_ptr</code> ran the destructor on a
+perfectly ordinary-looking path object. Nothing about the code itself explained a
+crash, and nothing in the code review two weeks earlier had raised a flag.
+That's because the bug wasn't in the code. It was in how the code was
+<em>built</em>.</p>
+<h2>A field that wasn't there</h2>
+<p>The backtrace was short and pointed deep inside the standard library:</p>
+<pre><code>#0  std::filesystem::__cxx11::path::_List::_Impl_deleter::operator()() ()
+       from /lib/x86_64-linux-gnu/libstdc++.so.6
+#1  std::filesystem::__cxx11::path::_List::~_List() ()
+#2  std::filesystem::__cxx11::path::~path() ()
+#3  ConfigParser::loadFrom() ()
+       at config_parser.cpp:47
+</code></pre>
+<p>The crash was inside <code>~path()</code>. C++ destroys members in reverse
+declaration order, so the destructor started with the last member:
+<code>_M_cmpts</code>, the parsed-component storage. In the new ABI, <code>_M_cmpts</code>
+sits at offset +32 inside the path object. But the library had built a
+16-byte old-ABI path. Offset +32 was 16 bytes past the end of the
+actual object. The destructor read whatever happened to be in adjacent
+memory, interpreted it as a <code>unique_ptr&lt;_Impl&gt;</code> (a pointer to the
+component storage implementation), and tried to dereference it. The
+value there was <code>0x1a</code> — unmapped memory. SIGSEGV.</p>
+<p>In GDB, a raw dump of the memory at the path pointer showed what was
+happening:</p>
+<pre class="language-gdb"><code class="language-gdb">(gdb) x/5gx config_path
+0x55a3e890:  0x000055a3e8c8  0x000055a3e8f0
+0x55a3e8a0:  0x0000000000000000  0x0000000000000041
+0x55a3e8b0:  0x000000000000001a</code></pre>
+<p>The first two quadwords (16 bytes) were the actual path object: a COW
+data pointer and the old-ABI <code>_M_cmpts</code>. Everything after was outside
+the object — heap metadata and the start of the string's COW control
+block. The value at offset +32, <code>0x1a</code> (26 decimal), was the COW
+block's <code>_M_length</code> field — literally the string length of
+&quot;/usr/share/config/app.conf&quot;. The new-ABI destructor read that string
+length as a pointer and tried to follow it.</p>
+<p>The question shifted from &quot;what's wrong with the code&quot; to &quot;what's wrong
+with the <em>object</em>.&quot;</p>
+<h2>The <code>sizeof</code> that explained everything</h2>
+<p>The next diagnostic was crude but decisive:</p>
+<pre class="language-cpp"><code class="language-cpp"><span class="token comment">// Added to the test (compiled with GCC 12, libstdc++11):</span>
+std<span class="token double-colon punctuation">::</span>cerr <span class="token operator">&lt;&lt;</span> <span class="token string">"sizeof(path) in test: "</span> <span class="token operator">&lt;&lt;</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>std<span class="token double-colon punctuation">::</span>filesystem<span class="token double-colon punctuation">::</span>path<span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> <span class="token string">"\n"</span><span class="token punctuation">;</span>
+
+<span class="token comment">// Added to the library that constructs the path (compiled with GCC 8, libstdc++):</span>
+std<span class="token double-colon punctuation">::</span>cerr <span class="token operator">&lt;&lt;</span> <span class="token string">"sizeof(path) in lib:  "</span> <span class="token operator">&lt;&lt;</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>std<span class="token double-colon punctuation">::</span>filesystem<span class="token double-colon punctuation">::</span>path<span class="token punctuation">)</span> <span class="token operator">&lt;&lt;</span> <span class="token string">"\n"</span><span class="token punctuation">;</span></code></pre>
+<pre><code>sizeof(path) in test: 40
+sizeof(path) in lib:  16
+</code></pre>
+<p>Forty bytes versus sixteen. The library allocated a 16-byte old-ABI path.
+When the consumer's <code>unique_ptr</code> went out of scope, it ran the new-ABI
+destructor, which expected a 40-byte object. The destructor tried to clean up <code>_M_cmpts</code> at
+offset +32 — 16 bytes past the end of the real object — read garbage
+from adjacent memory, interpreted it as a pointer, and crashed
+dereferencing it. That's the crash.</p>
+<p>The reason for the size difference is <code>std::string</code>.
+<code>std::filesystem::path</code> stores its pathname as a <code>std::string</code>
+internally. And <code>std::string</code> has two different memory layouts in
+libstdc++, controlled by the <code>_GLIBCXX_USE_CXX11_ABI</code> macro (or, in
+Conan terms, the <code>compiler.libcxx</code> setting).</p>
+<p>The old layout (<code>libstdc++</code>, <code>_GLIBCXX_USE_CXX11_ABI=0</code>) uses
+copy-on-write (COW) with a single pointer to a heap-allocated control
+block. The new layout (<code>libstdc++11</code>, <code>_GLIBCXX_USE_CXX11_ABI=1</code>) uses
+the small string optimization (SSO) with inline storage for short
+strings:</p>
+<img src="/posts/img/string-abi-layout.svg" alt="Diagram comparing std::string memory layout under the old ABI (COW, 8 bytes: a single pointer to a heap-allocated length/capacity/refcount/data block) versus the new ABI (SSO, 32 bytes: pointer, length, and a union of an inline char buffer or capacity field)">
+<p>These are different <em>sizes</em>: 8 bytes versus 32 bytes on x86-64. You
+cannot hand one to code expecting the other. And since
+<code>std::filesystem::path</code> contains a <code>std::string</code>, the path inherits the
+mismatch:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><code>libstdc++</code> (old)</th>
+<th><code>libstdc++11</code> (new)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>_M_pathname</code> (<code>std::string</code>)</td>
+<td>8 bytes</td>
+<td>32 bytes</td>
+</tr>
+<tr>
+<td><code>_M_cmpts</code> (component storage)</td>
+<td>8 bytes</td>
+<td>8 bytes</td>
+</tr>
+<tr>
+<td><strong>Total <code>sizeof(path)</code></strong></td>
+<td><strong>16 bytes</strong></td>
+<td><strong>40 bytes</strong></td>
+</tr>
+</tbody>
+</table>
+<p>That explained both the GDB output and the crash. The first 8 bytes of
+the old-ABI object were a heap pointer, which the new-ABI consumer also
+interpreted as a heap pointer (both ABIs store a pointer at offset 0). So
+GDB could read the actual string content. But bytes 8–15 of the old
+object, the component storage, were interpreted as the string <em>length</em>,
+producing a nonsensical value in the trillions. And bytes 16–39, which
+the consumer expected to find, didn't belong to the path object at all.
+The destructor only needed to read <code>_M_cmpts</code> at offset +32 to crash —
+the garbage there was a string length (26), which it dereferenced as a
+pointer to unmapped memory.</p>
+<h2>Why the linker didn't save us</h2>
+<p>libstdc++ has a safety mechanism for catching this kind of mismatch. New-ABI
+types like <code>std::string</code> live in an inline namespace <code>__cxx11</code>, so old-ABI
+and new-ABI strings mangle differently:</p>
+<pre><code>Old ABI:  std::basic_string&lt;char&gt;
+New ABI:  std::__cxx11::basic_string&lt;char&gt;
+</code></pre>
+<p>If you try to link a function that takes <code>std::string</code> across the ABI
+boundary, the linker rejects it with an undefined symbol error. Since
+GCC 11, <code>std::filesystem::path</code> also lives in the <code>__cxx11</code> namespace:</p>
+<pre><code>Old ABI:  std::filesystem::path
+New ABI:  std::filesystem::__cxx11::path
+</code></pre>
+<p>A direct C++ function taking <code>const path&amp;</code> mangles differently between
+ABIs, and the linker would reject it.</p>
+<p>But our Conan library's public API used C-linkage wrappers, a common
+pattern for packages intended to work across compiler versions. Path
+objects were returned through <code>extern &quot;C&quot;</code> functions as opaque pointers
+and cast back to <code>std::filesystem::path*</code> on the consumer side. C
+linkage strips all C++ type information from the symbol, so the linker
+saw matching, undecorated symbols on both sides and was satisfied. It
+had no way to know that the pointer referred to a 16-byte object the
+consumer would read as 40 bytes.</p>
+<p>Link-time success only proves symbol compatibility. It does not prove
+ABI compatibility. In our case, the binary linked cleanly, ran
+successfully, and crashed in a destructor.</p>
+<h2>A profile nobody remembered</h2>
+<p>With the mechanism understood, the question was: <em>how did an old-ABI
+library end up in a new-ABI build?</em></p>
+<p>The answer was in Conan. Our monorepo used Conan to manage a handful of
+external C++ dependencies. One of them, a configuration-file parser,
+depended on a utility library that exposed <code>std::filesystem::path</code> in
+its API. The Conan profile used to build and cache these packages:</p>
+<pre class="language-ini"><code class="language-ini"><span class="token comment"># conan_profile_legacy</span>
+<span class="token section"><span class="token punctuation">[</span><span class="token section-name selector">settings</span><span class="token punctuation">]</span></span>
+<span class="token key attr-name">os</span><span class="token punctuation">=</span><span class="token value attr-value">Linux</span>
+<span class="token key attr-name">compiler</span><span class="token punctuation">=</span><span class="token value attr-value">gcc</span>
+<span class="token key attr-name">compiler.version</span><span class="token punctuation">=</span><span class="token value attr-value">8</span>
+<span class="token key attr-name">compiler.libcxx</span><span class="token punctuation">=</span><span class="token value attr-value">libstdc++</span>
+<span class="token key attr-name">build_type</span><span class="token punctuation">=</span><span class="token value attr-value">Release</span></code></pre>
+<p>That <code>compiler.libcxx=libstdc++</code> is the problem. It tells Conan to
+build with <code>_GLIBCXX_USE_CXX11_ABI=0</code>: the old, COW-based string layout.
+The monorepo's own Bazel toolchain used GCC 12 with the default
+<code>libstdc++11</code> (new ABI). No one had updated the Conan profile when the
+monorepo migrated compilers, because no one remembered it existed. The
+Conan packages were cached in the CI artifact store, built months ago,
+and just kept working until someone added a code path that passed a
+<code>std::filesystem::path</code> across the boundary.</p>
+<p>The misconfiguration had been latent the entire time. Simpler types
+like integers, plain structs, and C strings had crossed the C-linkage boundary
+without issue because their layouts don't change between ABIs. It was
+only when someone added a code path that passed a
+<code>std::filesystem::path</code> through the opaque-pointer interface that the
+layout mismatch became a runtime fault.</p>
+<h2>What we changed</h2>
+<p>The immediate fix was one line: update the Conan profile.</p>
+<pre class="language-ini"><code class="language-ini"><span class="token comment"># conan_profile (updated)</span>
+<span class="token section"><span class="token punctuation">[</span><span class="token section-name selector">settings</span><span class="token punctuation">]</span></span>
+<span class="token key attr-name">os</span><span class="token punctuation">=</span><span class="token value attr-value">Linux</span>
+<span class="token key attr-name">compiler</span><span class="token punctuation">=</span><span class="token value attr-value">gcc</span>
+<span class="token key attr-name">compiler.version</span><span class="token punctuation">=</span><span class="token value attr-value">12</span>
+<span class="token key attr-name">compiler.libcxx</span><span class="token punctuation">=</span><span class="token value attr-value">libstdc++11</span>
+<span class="token key attr-name">build_type</span><span class="token punctuation">=</span><span class="token value attr-value">Release</span></code></pre>
+<p>Rebuild and re-cache every Conan package. Segfault gone.</p>
+<p>But &quot;update the profile&quot; is a fix for <em>this</em> incident, not for the class
+of problem. Three things changed to make it harder for this to happen
+again:</p>
+<p><strong>A compile-time ABI canary.</strong> A header shared between the Conan packages
+and the monorepo now checks both the compiler version and the ABI:</p>
+<pre class="language-cpp"><code class="language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression"><span class="token function">defined</span><span class="token punctuation">(</span>__GNUC__<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> __GNUC__ <span class="token operator">&lt;</span> <span class="token number">12</span></span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">error</span> <span class="token string">"This library must be built with GCC 12+ to match the monorepo toolchain."</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression">_GLIBCXX_USE_CXX11_ABI <span class="token operator">!=</span> <span class="token number">1</span></span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">error</span> <span class="token string">"This library must be built with the C++11 ABI (compiler.libcxx=libstdc++11)."</span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span></code></pre>
+<p>This turns a silent runtime segfault into a loud compile-time error.</p>
+<p><strong>Profile generation from the toolchain.</strong> The Conan profile is now
+generated from the same toolchain definition that Bazel uses, rather than
+being a hand-maintained file that can drift.</p>
+<p><strong>C types at package boundaries.</strong> Where a Conan-provided library needs
+to exchange paths with the monorepo, the interface now uses
+<code>const char*</code> rather than <code>std::filesystem::path</code>. The conversion to
+<code>path</code> happens on the caller's side, in code compiled with the caller's
+toolchain. This removes <code>path</code> from the ABI surface entirely.</p>
+<h2>What makes this class of bug hard</h2>
+<p>Every defense you'd normally rely on is absent:</p>
+<ul>
+<li><strong>No compiler warning.</strong> Both sides compile cleanly. The mismatch is
+between translation units that never see each other's source.</li>
+<li><strong>No linker error.</strong> The <code>__cxx11</code> inline namespace catches ABI
+mismatches for types like <code>std::string</code> and <code>std::filesystem::path</code>
+in direct C++ function signatures. It cannot help when objects cross
+the boundary through C linkage, <code>dlopen</code>, or type erasure.</li>
+<li><strong>No sanitizer catch (by default).</strong> ASan and UBSan instrument a
+single build. They don't detect layout disagreements between
+separately compiled artifacts unless you rebuild <em>everything</em> under a
+single, consistent toolchain, which is exactly the thing that wasn't
+happening.</li>
+<li><strong>The crash is non-local.</strong> The segfault occurs in the consumer, not
+in the producer. The library that built the wrong-layout object runs
+fine; it's the code that <em>reads</em> the object under the wrong assumptions
+that dies.</li>
+</ul>
+<p>And even beyond the <code>libstdc++</code> / <code>libstdc++11</code> flag: <code>std::filesystem::path</code>
+is not ABI-stable across libstdc++ versions at all. Its internal
+representation (the component storage, the parsing logic, the helper
+types) changed between GCC 8 and GCC 9 when the implementation moved
+from the separate <code>libstdc++fs</code> static library into the main
+<code>libstdc++.so</code>, and continued to evolve through GCC 11 and 12. Types
+like <code>std::string</code> and <code>std::vector</code> were explicitly frozen after the
+ABI transition, but <code>std::filesystem::path</code>, <code>std::regex</code>, and other
+newer types were not part of that freeze.</p>
+<p>If your build system consumes prebuilt C++ binaries through Conan,
+vcpkg, system packages, or anything else, both the <code>libcxx</code> setting
+<em>and</em> the compiler version are load-bearing. Every unfrozen standard
+library type you expose across that boundary is a bet that both sides
+were built with the same libstdc++. When the bet is wrong, nothing tells
+you until a destructor reads a string length as a pointer and segfaults.</p>
+<h2>Reproduction</h2>
+<p>A self-contained reproduction of this crash is available in
+<a href="https://github.com/the-offclock/abi-mismatch"><code>the example implementation repo</code></a>.</p>
+<p>For a byte-level walkthrough of what happens in memory when the two ABI
+layouts collide, see the companion article:
+<a href="/posts/abi-mismatch-memory-behavior/">ABI Mismatch Under the Hood</a>.</p>
+
+  
+  <div class="post-tags">
+    <a href="/tags/cpp/" class="tag">C++</a>
+    <a href="/tags/debugging/" class="tag">Debugging</a>
+    <a href="/tags/abi/" class="tag">ABI</a>
+    <a href="/tags/linker/" class="tag">Linker</a>
+    <a href="/tags/build-systems/" class="tag">Build Systems</a>
+  </div>
+  
+</article>
+<a href="/" class="back-link">&larr; back</a>
+
+  </main>
+  <footer>
+    <hr class="site-divider">
+    <p>&copy; offclock      &middot;      <a href="/feed.xml">rss</a></p>
+  </footer>
+  <div class="lightbox-overlay" id="lightbox">
+    <img src="" alt="">
+  </div>
+  <script>
+    (function () {
+      var overlay = document.getElementById("lightbox");
+      var overlayImg = overlay.querySelector("img");
+      document.querySelectorAll("article.post img[src$='.svg']").forEach(function (img) {
+        img.addEventListener("click", function () {
+          overlayImg.src = img.src;
+          overlayImg.alt = img.alt;
+          overlay.classList.add("active");
+        });
+      });
+      overlay.addEventListener("click", function () {
+        overlay.classList.remove("active");
+      });
+    })();
+    document.querySelectorAll("pre").forEach(function (pre) {
+      var btn = document.createElement("button");
+      btn.className = "copy-btn";
+      btn.textContent = "copy";
+      btn.addEventListener("click", function () {
+        var code = pre.querySelector("code");
+        navigator.clipboard.writeText((code || pre).textContent).then(function () {
+          btn.textContent = "copied";
+          setTimeout(function () { btn.textContent = "copy"; }, 1500);
+        });
+      });
+      pre.style.position = "relative";
+      pre.appendChild(btn);
+    });
+  </script>
+</body>
+</html>

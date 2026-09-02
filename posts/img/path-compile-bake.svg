@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 290" fill="none">
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    .label { fill: #c9d1d9; font-size: 12px; }
+    .label-sm { fill: #8b949e; font-size: 10px; }
+    .label-bold { fill: #c9d1d9; font-size: 13px; font-weight: 600; }
+    .label-mono { fill: #c9d1d9; font-size: 11px; font-family: "JetBrains Mono", "Fira Code", monospace; }
+    .accent { fill: #88f47d; font-size: 11px; font-weight: 500; }
+    .accent-lg { fill: #88f47d; font-size: 13px; font-weight: 600; }
+    .blue { fill: #58a6ff; font-size: 11px; font-weight: 500; }
+    .region { stroke: #30363d; stroke-width: 1; rx: 6; fill: #0d1117; }
+    .field { stroke: #30363d; stroke-width: 1; fill: #161b22; rx: 3; }
+    .arrow-blue { stroke: #58a6ff; stroke-width: 1.5; fill: none; marker-end: url(#arr-blue); }
+  </style>
+  <defs>
+    <marker id="arr-blue" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+      <polygon points="0 0, 7 2.5, 0 5" fill="#58a6ff"/>
+    </marker>
+  </defs>
+
+  <!-- ==================== HEADER FILE (left) ==================== -->
+  <rect class="region" x="15" y="10" width="235" height="270"/>
+  <text class="label-bold" x="132" y="34" text-anchor="middle">bits/fs_path.h</text>
+
+  <text class="label-mono" x="30" y="64">class path {</text>
+  <text class="label-mono" x="30" y="84">  string  _M_pathname;</text>
+  <text class="label-mono" x="30" y="104">  _List   _M_cmpts;</text>
+  <text class="label-mono" x="30" y="124">};</text>
+
+  <line x1="30" y1="142" x2="230" y2="142" stroke="#30363d" stroke-width="1"/>
+
+  <text class="label-sm" x="30" y="162">sizeof(string) is determined by</text>
+  <text class="accent" x="30" y="180">_GLIBCXX_USE_CXX11_ABI</text>
+
+  <text class="label-sm" x="30" y="208">ABI=0 (old) → string is 8 bytes</text>
+  <text class="label-sm" x="30" y="226">ABI=1 (new) → string is 32 bytes</text>
+
+  <text class="label-sm" x="30" y="254">Constructor &amp; destructor are</text>
+  <text class="label-sm" x="30" y="268">defined here too (inlined)</text>
+
+  <!-- ==================== ARROW ==================== -->
+  <path class="arrow-blue" d="M 260 145 L 400 145"/>
+  <text class="label-bold" x="330" y="128" text-anchor="middle">g++ compiles</text>
+  <text class="label-sm" x="330" y="166" text-anchor="middle">field offsets become</text>
+  <text class="label-sm" x="330" y="180" text-anchor="middle">hardcoded constants</text>
+
+  <!-- ==================== BINARY (right) ==================== -->
+  <rect class="region" x="410" y="10" width="275" height="270"/>
+  <text class="label-bold" x="547" y="34" text-anchor="middle">your_binary (new ABI)</text>
+
+  <!-- Field blocks -->
+  <rect class="field" x="425" y="52" width="185" height="30"/>
+  <text class="label-mono" x="435" y="72">_M_pathname.ptr</text>
+  <text class="accent" x="620" y="72">+0</text>
+
+  <rect class="field" x="425" y="86" width="185" height="30"/>
+  <text class="label-mono" x="435" y="106">_M_pathname.length</text>
+  <text class="accent" x="620" y="106">+8</text>
+
+  <rect class="field" x="425" y="120" width="185" height="56"/>
+  <text class="label-mono" x="435" y="144">_M_pathname.buf/cap</text>
+  <text class="label-sm" x="435" y="162">16 bytes (union)</text>
+  <text class="accent" x="620" y="152">+16</text>
+
+  <rect class="field" x="425" y="180" width="185" height="30"/>
+  <text class="label-mono" x="435" y="200">_M_cmpts</text>
+  <text class="accent" x="620" y="200">+32</text>
+
+  <!-- Size callout -->
+  <line x1="618" y1="52" x2="628" y2="52" stroke="#8b949e" stroke-width="1"/>
+  <line x1="628" y1="52" x2="628" y2="210" stroke="#8b949e" stroke-width="1"/>
+  <line x1="618" y1="210" x2="628" y2="210" stroke="#8b949e" stroke-width="1"/>
+  <text class="accent-lg" x="636" y="128">40</text>
+  <text class="accent-lg" x="636" y="144">bytes</text>
+
+  <text class="label-sm" x="547" y="236" text-anchor="middle">sizeof(path) = 40</text>
+  <text class="accent" x="547" y="254" text-anchor="middle">hardcoded at compile time</text>
+  <text class="label-sm" x="547" y="270" text-anchor="middle">every access uses these offsets</text>
+</svg>

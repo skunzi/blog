@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>On Naming Things — offclock / writing</title>
+  <meta name="description" content="Why the two hardest problems in computer science are really just one problem wearing different hats.">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="/apple-touch-icon.png">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="On Naming Things">
+  <meta property="og:description" content="Why the two hardest problems in computer science are really just one problem wearing different hats.">
+  <meta property="og:url" content="https://blog.offclock.dev/posts/on-naming-things/">
+  <meta property="og:image" content="https://blog.offclock.dev/og-image.png">
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="On Naming Things">
+  <meta name="twitter:description" content="Why the two hardest problems in computer science are really just one problem wearing different hats.">
+  <meta name="twitter:image" content="https://blog.offclock.dev/og-image.png">
+
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <header>
+    <a href="/" class="site-logo"><img src="/logo.svg" alt="offclock.dev"></a>
+    <hr class="site-divider">
+    <a href="/" class="site-subtitle">writing</a>
+  </header>
+  <main>
+    <article class="post">
+  <h1>On Naming Things</h1>
+  <div class="post-meta">AUG 10, 2026</div>
+  <p>Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.</p>
+<h2>The problem with names</h2>
+<p>Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.</p>
+<p>Curabitur pretium tincidunt lacus. Nulla gravida orci a odio. Nullam varius, turpis et commodo pharetra, est eros bibendum elit, nec luctus magna felis sollicitudin mauris.</p>
+<pre><code class="language-python">def get_thing():
+    # what even is a &quot;thing&quot;?
+    return thing
+</code></pre>
+<h2>Names carry assumptions</h2>
+<p>Integer in mauris eu nibh euismod gravida. Duis ac tellus et risus vulputate vehicula. Donec lobortis risus a elit. Etiam tempor. Ut ullamcorper, ligula ut dictum pharetra, nisi nunc fringilla magna, in commodo elit erat sit amet risus.</p>
+<p>Praesent dapibus, neque id cursus faucibus, tortor neque egestas augue, eu vulputate magna eros eu erat. Aliquam erat volutpat. Nam dui mi, tincidunt quis, accumsan porttitor, facilisis luctus, metus.</p>
+<h2>When in doubt, be boring</h2>
+<p>Phasellus ultrices nulla quis nibh. Quisque a lectus. Donec consectetuer ligula vulputate sem tristique cursus. Nam nulla quam, gravida non, commodo a, sodales sit amet, nisi.</p>
+<p>Pellentesque fermentum dolor. Aliquam quam lectus, facilisis auctor, ultrices ut, elementum vulputate, nunc. Sed adipiscing ornare risus. Morbi est est, blandit sit amet, sagittis vel, euismod vel, velit.</p>
+
+</article>
+<a href="/" class="back-link">&larr; back</a>
+
+  </main>
+  <div class="lightbox-overlay" id="lightbox">
+    <img src="" alt="">
+  </div>
+  <script>
+    (function () {
+      var overlay = document.getElementById("lightbox");
+      var overlayImg = overlay.querySelector("img");
+      document.querySelectorAll("article.post img[src$='.svg']").forEach(function (img) {
+        img.addEventListener("click", function () {
+          overlayImg.src = img.src;
+          overlayImg.alt = img.alt;
+          overlay.classList.add("active");
+        });
+      });
+      overlay.addEventListener("click", function () {
+        overlay.classList.remove("active");
+      });
+    })();
+  </script>
+</body>
+</html>

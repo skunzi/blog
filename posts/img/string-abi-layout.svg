@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 660 330" fill="none">
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    .label { fill: #c9d1d9; font-size: 12px; }
+    .label-sm { fill: #8b949e; font-size: 10px; }
+    .label-bold { fill: #c9d1d9; font-size: 13px; font-weight: 600; }
+    .label-mono { fill: #c9d1d9; font-size: 11px; font-family: "JetBrains Mono", "Fira Code", monospace; }
+    .accent { fill: #88f47d; font-size: 11px; font-weight: 500; }
+    .accent-lg { fill: #88f47d; font-size: 13px; font-weight: 600; }
+    .danger { fill: #f85149; font-size: 11px; font-weight: 600; }
+    .blue { fill: #58a6ff; font-size: 11px; font-weight: 500; }
+    .region { stroke: #30363d; stroke-width: 1; rx: 6; fill: #0d1117; }
+    .field { stroke: #30363d; stroke-width: 1; fill: #161b22; rx: 3; }
+    .field-heap { stroke: #30363d; stroke-width: 1; fill: #1a1e24; stroke-dasharray: 4 2; rx: 3; }
+    .arrow-blue { stroke: #58a6ff; stroke-width: 1.5; fill: none; marker-end: url(#arr-blue); }
+  </style>
+  <defs>
+    <marker id="arr-blue" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+      <polygon points="0 0, 7 2.5, 0 5" fill="#58a6ff"/>
+    </marker>
+  </defs>
+
+  <!-- ==================== OLD ABI (left) ==================== -->
+  <rect class="region" x="20" y="10" width="280" height="310"/>
+  <text class="label-bold" x="160" y="34" text-anchor="middle">libstdc++ (old ABI, COW)</text>
+  <text class="accent" x="160" y="50" text-anchor="middle">_GLIBCXX_USE_CXX11_ABI = 0</text>
+
+  <!-- std::string object -->
+  <text class="label-sm" x="40" y="76">std::string object</text>
+
+  <rect class="field" x="40" y="82" width="160" height="32"/>
+  <text class="label-mono" x="50" y="102">ptr</text>
+  <text class="label-sm" x="145" y="102">8 bytes</text>
+
+  <!-- Brace for object size -->
+  <line x1="210" y1="82" x2="220" y2="82" stroke="#8b949e" stroke-width="1"/>
+  <line x1="220" y1="82" x2="220" y2="114" stroke="#8b949e" stroke-width="1"/>
+  <line x1="210" y1="114" x2="220" y2="114" stroke="#8b949e" stroke-width="1"/>
+  <text class="accent-lg" x="230" y="103">8 bytes total</text>
+
+  <!-- Arrow to heap -->
+  <path class="arrow-blue" d="M 120 114 L 120 160"/>
+
+  <!-- Heap-allocated control block -->
+  <text class="label-sm" x="40" y="172">heap-allocated block</text>
+
+  <rect class="field-heap" x="40" y="178" width="200" height="32"/>
+  <text class="label-mono" x="50" y="198">length</text>
+
+  <rect class="field-heap" x="40" y="210" width="200" height="32"/>
+  <text class="label-mono" x="50" y="230">capacity</text>
+
+  <rect class="field-heap" x="40" y="242" width="200" height="32"/>
+  <text class="label-mono" x="50" y="262">refcount</text>
+
+  <rect class="field-heap" x="40" y="274" width="200" height="32"/>
+  <text class="label-mono" x="50" y="294">char data[]</text>
+  <text class="blue" x="160" y="294">"usr/share..."</text>
+
+  <!-- ==================== NEW ABI (right) ==================== -->
+  <rect class="region" x="340" y="10" width="300" height="310"/>
+  <text class="label-bold" x="490" y="34" text-anchor="middle">libstdc++11 (new ABI, SSO)</text>
+  <text class="accent" x="490" y="50" text-anchor="middle">_GLIBCXX_USE_CXX11_ABI = 1</text>
+
+  <!-- std::string object -->
+  <text class="label-sm" x="360" y="76">std::string object</text>
+
+  <rect class="field" x="360" y="82" width="200" height="32"/>
+  <text class="label-mono" x="370" y="102">ptr</text>
+  <text class="label-sm" x="495" y="102">8 bytes</text>
+
+  <rect class="field" x="360" y="114" width="200" height="32"/>
+  <text class="label-mono" x="370" y="134">length</text>
+  <text class="label-sm" x="495" y="134">8 bytes</text>
+
+  <!-- union region -->
+  <rect x="360" y="150" width="200" height="68" rx="3" stroke="#58a6ff" stroke-width="1" stroke-dasharray="4 2" fill="none"/>
+  <text class="blue" x="565" y="170">union</text>
+
+  <rect class="field" x="364" y="154" width="192" height="28" rx="2"/>
+  <text class="label-mono" x="374" y="172">char buf[16]</text>
+  <text class="label-sm" x="490" y="172">inline</text>
+
+  <rect class="field" x="364" y="186" width="192" height="28" rx="2"/>
+  <text class="label-mono" x="374" y="204">capacity</text>
+  <text class="label-sm" x="490" y="204">8 bytes</text>
+
+  <!-- Brace for object size -->
+  <line x1="570" y1="82" x2="580" y2="82" stroke="#8b949e" stroke-width="1"/>
+  <line x1="580" y1="82" x2="580" y2="218" stroke="#8b949e" stroke-width="1"/>
+  <line x1="570" y1="218" x2="580" y2="218" stroke="#8b949e" stroke-width="1"/>
+  <text class="accent-lg" x="590" y="155">32 bytes</text>
+  <text class="accent-lg" x="590" y="171">total</text>
+
+  <!-- Mismatch callout at bottom -->
+  <rect x="360" y="268" width="260" height="44" rx="4" fill="#1c0b0b" stroke="#f85149" stroke-width="1"/>
+  <text class="danger" x="490" y="286" text-anchor="middle">sizeof(path): 16 with old ABI</text>
+  <text class="danger" x="490" y="302" text-anchor="middle">sizeof(path): 40 with new ABI</text>
+</svg>

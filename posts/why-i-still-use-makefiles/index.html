@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Why I Still Use Makefiles — offclock / writing</title>
+  <meta name="description" content="Make is older than most programmers. It&#39;s also still the best task runner for projects that don&#39;t need more.">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="/apple-touch-icon.png">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Why I Still Use Makefiles">
+  <meta property="og:description" content="Make is older than most programmers. It&#39;s also still the best task runner for projects that don&#39;t need more.">
+  <meta property="og:url" content="https://blog.offclock.dev/posts/why-i-still-use-makefiles/">
+  <meta property="og:image" content="https://blog.offclock.dev/og-image.png">
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Why I Still Use Makefiles">
+  <meta name="twitter:description" content="Make is older than most programmers. It&#39;s also still the best task runner for projects that don&#39;t need more.">
+  <meta name="twitter:image" content="https://blog.offclock.dev/og-image.png">
+
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <header>
+    <a href="/" class="site-logo"><img src="/logo.svg" alt="offclock.dev"></a>
+    <hr class="site-divider">
+    <a href="/" class="site-subtitle">writing</a>
+  </header>
+  <main>
+    <article class="post">
+  <h1>Why I Still Use Makefiles</h1>
+  <div class="post-meta">JUN 15, 2026</div>
+  <p>Lorem ipsum dolor sit amet, consectetur adipiscing elit. Proin at eros non eros adipiscing mollis. Donec semper turpis sed diam. Sed consequat ligula nec tortor.</p>
+<h2>The appeal of boring tools</h2>
+<p>Integer nec odio. Praesent libero. Sed cursus ante dapibus diam. Sed nisi. Nulla quis sem at nibh elementum imperdiet. Duis sagittis ipsum. Praesent mauris.</p>
+<p>Fusce nec tellus sed augue semper porta. Mauris massa. Vestibulum lacinia arcu eget nulla. Class aptent taciti sociosqu ad litora torquent per conubia nostra, per inceptos himenaeos.</p>
+<pre><code class="language-makefile">.PHONY: build dev clean
+
+build:
+	npm run build
+
+dev:
+	npm run dev
+
+clean:
+	rm -rf _site
+</code></pre>
+<h2>What Make gives you for free</h2>
+<p>Curabitur sodales ligula in libero. Sed dignissim lacinia nunc. Curabitur tortor. Pellentesque nibh. Aenean quam. In scelerisque sem at dolor.</p>
+<p>Maecenas mattis. Sed convallis tristique sem. Proin ut ligula vel nunc egestas porttitor. Morbi lectus risus, iaculis vel, suscipit quis, luctus non, massa.</p>
+<h2>When to reach for something else</h2>
+<p>Fusce ac turpis quis ligula lacinia aliquet. Mauris ipsum. Nulla metus metus, ullamcorper vel, tincidunt sed, euismod in, nibh. Quisque volutpat condimentum velit.</p>
+<p>Class aptent taciti sociosqu ad litora torquent per conubia nostra, per inceptos himenaeos. Nam nec ante. Sed lacinia, urna non tincidunt mattis, tortor neque adipiscing diam, a cursus ipsum ante quis turpis.</p>
+
+</article>
+<a href="/" class="back-link">&larr; back</a>
+
+  </main>
+  <div class="lightbox-overlay" id="lightbox">
+    <img src="" alt="">
+  </div>
+  <script>
+    (function () {
+      var overlay = document.getElementById("lightbox");
+      var overlayImg = overlay.querySelector("img");
+      document.querySelectorAll("article.post img[src$='.svg']").forEach(function (img) {
+        img.addEventListener("click", function () {
+          overlayImg.src = img.src;
+          overlayImg.alt = img.alt;
+          overlay.classList.add("active");
+        });
+      });
+      overlay.addEventListener("click", function () {
+        overlay.classList.remove("active");
+      });
+    })();
+  </script>
+</body>
+</html>

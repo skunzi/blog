@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>The Static That Died Twice — offclock / writing</title>
+  <meta name="description" content="A field report from debugging a double-free crash that only showed up after all tests had already passed.">
+  <meta name="author" content="offclock">
+  <link rel="canonical" href="https://blog.offclock.dev/posts/the-static-that-died-twice/">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="/apple-touch-icon.png">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+
+  <!-- RSS -->
+  <link rel="alternate" type="application/atom+xml" title="offclock / writing" href="/feed.xml">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="The Static That Died Twice">
+  <meta property="og:description" content="A field report from debugging a double-free crash that only showed up after all tests had already passed.">
+  <meta property="og:url" content="https://blog.offclock.dev/posts/the-static-that-died-twice/">
+  <meta property="og:image" content="https://blog.offclock.dev/og-image.png">
+  <meta property="og:site_name" content="offclock / writing">
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="The Static That Died Twice">
+  <meta name="twitter:description" content="A field report from debugging a double-free crash that only showed up after all tests had already passed.">
+  <meta name="twitter:image" content="https://blog.offclock.dev/og-image.png">
+
+  
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BlogPosting",
+    "headline": "The Static That Died Twice",
+    "description": "A field report from debugging a double-free crash that only showed up after all tests had already passed.",
+    "datePublished": "2026-09-02T00:00:00.000Z",
+    "author": {
+      "@type": "Person",
+      "name": "offclock",
+      "url": "https://offclock.dev"
+    },
+    "publisher": {
+      "@type": "Person",
+      "name": "offclock",
+      "url": "https://offclock.dev"
+    },
+    "url": "https://blog.offclock.dev/posts/the-static-that-died-twice/",
+    "mainEntityOfPage": "https://blog.offclock.dev/posts/the-static-that-died-twice/"
+  }
+  </script>
+  
+
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <header>
+    <a href="/" class="site-logo"><img src="/logo.svg" alt="offclock / writing"></a>
+    <hr class="site-divider">
+    <nav class="site-nav">
+      <a href="/">writing</a>
+    </nav>
+  </header>
+  <main>
+    <article class="post">
+  <h1>The Static That Died Twice</h1>
+  <div class="post-meta">
+    <time datetime="2026-09-02T00:00:00.000Z">SEP 02, 2026</time>
+    <span class="reading-time">9 min read</span>
+  </div>
+  <p><em>A field report from debugging a &quot;double free or corruption (!prev)&quot; crash that only
+showed up after all tests had already passed.</em></p>
+<h2>The log that shouldn't exist</h2>
+<pre><code>[==========] 24 tests from 1 test suite ran. (158 ms total)
+[  PASSED  ] 24 tests.
+double free or corruption (!prev)
+</code></pre>
+<p>Read that again. Every assertion passed. GoogleTest printed its green
+<code>PASSED</code> banner. And then, with no test left running, the process reached
+for a chunk of heap memory that had already been freed, and aborted with
+exit code 134 (<code>SIGABRT</code>). That was enough to make the Bazel test suite fail
+even though all tests had already passed.</p>
+<p>There was no flaky assertion to blame, no obviously broken mock, not even a
+stack trace pointing at test code. Whatever was wrong lived <em>after</em> the
+tests were over, in the machinery almost nobody ever looks at: global
+static teardown.</p>
+<p>This is the story of tracking that crash down to its actual cause: a single
+class-static object that, thanks to how the build was wired up, existed
+<strong>twice</strong> in the same process and got destroyed <strong>twice</strong> at exit.</p>
+<h2>TL;DR for the impatient</h2>
+<p>The same small &quot;settings&quot; library got linked into one test binary through
+two different routes: once built from source into a shared library, once as
+a prebuilt static archive baked directly into the executable. A mutable,
+exported class-static object inside that library therefore existed as two
+physical copies, yet the dynamic linker's symbol resolution silently
+collapsed both copies onto a single address. Both copies' constructors ran
+against that one address, and at shutdown both copies' destructors ran
+against it too, freeing the same allocator buffer twice. Nobody wrote a bug
+to cause this. It was an emergent property of the build graph.</p>
+<h2>Act 1: &quot;It says PASSED, so why did CI go red?&quot;</h2>
+<p>The first reaction to a failure like this is disbelief. Exit code 134 means
+<code>SIGABRT</code>, but every assertion in the test suite succeeded before it. The
+crash happens strictly <em>after</em> <code>RUN_ALL_TESTS()</code> has returned.</p>
+<p>The instinctive first suspects were the usual ones: a use-after-free in test
+fixtures, a bad mock lifetime, maybe a threading issue at shutdown. All of
+those were ruled out quickly, because the crash reproduced identically as a
+<strong>single, deterministic, single-threaded</strong> test with nothing exotic in it.
+That's a strong signal you're not looking at &quot;normal&quot; memory corruption.
+You're looking at something structural.</p>
+<h2>Act 2: symbol table archaeology</h2>
+<p>The binary in question is built from a large, modular C++ codebase, using a
+Bazel-like build system. Buried in its dependency graph is a small &quot;settings&quot;
+library (call it <code>SettingsEngine</code>) used by dozens of other components to
+read configuration from JSON. <code>SettingsEngine</code> ships a helper class,
+<code>DocumentReader</code>, that keeps a &quot;canonical empty document&quot; around as a
+fallback value, backed by a small pooled allocator:</p>
+<pre class="language-cpp"><code class="language-cpp"><span class="token keyword">class</span> <span class="token class-name">DocumentReader</span> <span class="token punctuation">{</span>
+<span class="token keyword">public</span><span class="token operator">:</span>
+    <span class="token keyword">static</span> <span class="token keyword">const</span> Document<span class="token operator">&amp;</span> <span class="token function">getEmptyDocument</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token keyword">private</span><span class="token operator">:</span>
+    <span class="token keyword">static</span> Document s_emptyDoc<span class="token punctuation">;</span>   <span class="token comment">// owns a pooled allocator internally</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span></code></pre>
+<p>Nothing unusual there. This pattern exists in thousands of codebases. The
+next step was to stop guessing about test code and start reading the binary
+itself. <code>nm</code> on the test executable and on every shared library it loads,
+grepping for that static:</p>
+<pre class="language-bash"><code class="language-bash">$ nm <span class="token parameter variable">-CD</span> ./test_binary            <span class="token operator">|</span> <span class="token function">grep</span> s_emptyDoc
+0000000000123456 B DocumentReader::s_emptyDoc
+
+$ nm <span class="token parameter variable">-CD</span> libsettingsengine.so     <span class="token operator">|</span> <span class="token function">grep</span> s_emptyDoc
+0000000000034560 B DocumentReader::s_emptyDoc</code></pre>
+<p>Two hits. Both <code>B</code> (bss, meaning uninitialized/zero-initialized static storage), in
+<strong>two different binary images</strong>. That single observation reframed the whole
+investigation: this isn't a lifetime bug in test code, it's a <strong>duplicated
+global</strong> across a shared library and the executable that statically links the
+same source.</p>
+<p>A quick pass with <code>ldd</code> and <code>strings</code> over the executable confirmed the
+suspicion further: the same header/source pair for <code>DocumentReader</code> had been
+compiled from <strong>two different physical locations on disk</strong> (once from the
+monorepo checkout, once from an unpacked vendored binary package) and both
+copies had made it into the final link.</p>
+<p>Pulling on that thread led straight to the dependency graph, and the actual
+source of the duplication: two unrelated build modules each declared their
+own dependency on &quot;the settings engine&quot; (one on the source repository, one
+on a prebuilt binary release of the <em>same</em> library) and nothing in the
+build graph deduplicated them.</p>
+<img src="/posts/img/dep-graph.svg" alt="Dependency graph showing two paths into the test binary: one through a source-built shared library, one through a vendored prebuilt static archive, both containing the same SettingsEngine code">
+<p><code>DocumentReader.cpp</code> was being compiled <strong>twice</strong>, into two separate binary
+artifacts that both ended up loaded into the same process. That explains the
+two <code>nm</code> hits, but not yet why destroying one of them would corrupt the
+other. For that, the backtrace of the crash itself was next.</p>
+<h2>Act 3: the backtrace names the crime scene</h2>
+<p>With a debug build in hand, the crash itself pointed straight at the
+destructor:</p>
+<pre><code>#7  _int_free ()
+#8  __GI___libc_free ()
+#9  DocumentReader::~DocumentReader ()
+      -&gt; code inside the TEST EXECUTABLE itself
+#10 __cxa_finalize (d=0x7ffff7dbd000)
+#11 libsettingsengine.so
+      -&gt; destructor registration OWNED BY THE SHARED LIBRARY
+#13 _dl_fini ()
+</code></pre>
+<p>That is a strange stack: the destructor body executing is the copy compiled
+into the <strong>executable</strong>, but it's being <em>invoked</em> from the exit machinery that
+belongs to the <strong>shared library</strong>. Two different modules, one function body,
+one call chain. That mismatch was the thread worth pulling.</p>
+<h2>Act 4: the conditional breakpoint that made it undeniable</h2>
+<p>At this point the working theory was: &quot;there might be two objects being
+destroyed, and one of the destructions is invalid.&quot; To prove it, the fix was
+to stop looking at code and start looking at <em>addresses</em>, with a conditional
+breakpoint on the destructor, gated on the <em>specific instance</em>:</p>
+<pre class="language-gdb"><code class="language-gdb">break DocumentReader::~DocumentReader if $rdi == &DocumentReader::s_emptyDoc
+run</code></pre>
+<p>The result settled the question completely:</p>
+<pre><code>HIT #1  -- called from __run_exit_handlers   (executable's atexit chain)
+HIT #2  -- called from __cxa_finalize of the .so (shared library's teardown)
+
+double free or corruption (!prev)
+Program received signal SIGABRT, Aborted.
+
+TOTAL DESTRUCTOR CALLS ON THIS ADDRESS = 2
+</code></pre>
+<p>Both hits fired on the <strong>exact same address</strong>. Not two different objects at
+two different addresses, but the <em>same</em> object, destroyed twice, by two
+independent teardown mechanisms that both believed they owned it.</p>
+<h2>The mechanism: how two objects become one</h2>
+<p>This is the part that makes the bug genuinely interesting rather than &quot;just
+a duplicate symbol.&quot; If the executable and the shared library really had two
+independent, isolated copies of <code>s_emptyDoc</code>, each would construct its own
+instance and destroy its own instance without any crash. The reason they instead
+collide on one address comes down to how position-independent shared
+libraries resolve global symbols.</p>
+<p>Because the class-static has ordinary (exported) visibility and the shared
+library is compiled position-independent, <em>every</em> access to <code>s_emptyDoc</code>,
+even from the translation unit that defines it, goes through a level of
+indirection (the GOT), rather than a hard-coded address. This is required by
+the shared-library ABI: if some other module in the process were to override
+the symbol, all consumers, including the &quot;owning&quot; module, must observe the
+same, single, global definition. It's the exact mechanism that lets you
+override <code>malloc</code> process-wide with <code>LD_PRELOAD</code>.</p>
+<p>When the same symbol name is exported by <strong>both</strong> the executable and a
+shared library, the loader's global symbol resolution has to pick one
+winner for the whole process, and the executable's own definition
+consistently wins over anything a shared library brings in. So both GOT
+entries end up pointing at address <code>A</code>, the executable's copy.
+Address <code>B</code> still physically exists (that's the second <code>nm</code> hit), but it's
+orphaned; nothing ever dereferences it through the normal symbol-based path.</p>
+<img src="/posts/img/symbol-resolution.svg" alt="Diagram showing the process address space: both the executable and the shared library have GOT entries for s_emptyDoc that resolve to the same address A. At shutdown, both teardown mechanisms call the destructor on that same address, causing a double free.">
+<p>Two independent modules each believe they own a private static object. Both
+constructed &quot;their&quot; instance. Both registered a teardown callback for &quot;their&quot;
+instance. But symbol resolution silently made both callbacks target the same
+memory, so the allocator's internal chunk pointer gets freed once by the
+executable's teardown and then freed <em>again</em> by the library's teardown.
+Classic double free, just arrived at through linkage rather than through
+application logic.</p>
+<h2>Why this is sneaky</h2>
+<ul>
+<li>Every individual test passes. The corruption only manifests during global
+teardown, which almost nobody single-steps through.</li>
+<li><code>nm</code> and <code>ldd</code> look &quot;normal&quot; at a glance. Duplicate symbols across a
+static archive and a shared object are common and usually harmless (each
+module just uses its own copy). It's only <em>exported, mutable, class-static
+data</em> that turns this into a landmine.</li>
+<li>The bug isn't in any one team's code. <code>DocumentReader</code> is fine in isolation.
+The test helper library is fine in isolation. The production populator
+libraries are fine in isolation. The defect is an emergent property of a
+build graph in which two independent dependency edges resolve to different
+builds (source vs. prebuilt binary) of the <em>same</em> library.</li>
+<li>The crash signature (<code>double free or corruption (!prev)</code>) points you toward
+&quot;someone freed a pointer twice,&quot; which is true, but the actual bug is one
+level up: &quot;someone constructed the <em>same static object</em> twice, from two
+different modules, without either module knowing about the other.&quot;</li>
+</ul>
+<h2>Fixing it</h2>
+<p>Two complementary fixes emerged:</p>
+<ol>
+<li>
+<p><strong>Collapse the build graph.</strong> Make sure only one dependency edge (source
+<em>or</em> prebuilt, never both) ever reaches a given library inside one
+binary. This is the real fix: it removes the duplicate compilation
+entirely, so there is only ever one definition to link and one object to
+construct/destroy.</p>
+</li>
+<li>
+<p><strong>Harden the library against accidental double-linkage.</strong> Replace the
+class-static object with a function-local <code>static</code> inside an accessor
+function:</p>
+<pre class="language-cpp"><code class="language-cpp"><span class="token keyword">const</span> Document<span class="token operator">&amp;</span> <span class="token class-name">DocumentReader</span><span class="token double-colon punctuation">::</span><span class="token function">getEmptyDocument</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{</span>
+    <span class="token keyword">static</span> Document emptyDoc<span class="token punctuation">{</span><span class="token punctuation">}</span><span class="token punctuation">;</span>   <span class="token comment">// constructed on first call, once</span>
+    <span class="token keyword">return</span> emptyDoc<span class="token punctuation">;</span>
+<span class="token punctuation">}</span></code></pre>
+<p>A function-local static's initialization guard variable is itself subject
+to the same GOT-based symbol resolution, so even if the function body
+ends up duplicated across a shared library and an executable, only one
+guard variable is ever live at the shared address, so construction (and the
+<code>__cxa_atexit</code> registration that comes with it) happens exactly once,
+no matter how many times the containing library is accidentally linked
+into the same process. This doesn't fix the underlying build-graph
+duplication, but it makes the library itself immune to this entire class
+of crash.</p>
+</li>
+</ol>
+<h2>Takeaways</h2>
+<ul>
+<li>If a process aborts with a memory-corruption signature strictly <em>after</em>
+tests report success, look at global/static teardown, not your test code.</li>
+<li><code>nm</code>/<code>ldd</code> across every loaded module is cheap and can immediately turn &quot;a
+vague heap corruption&quot; into &quot;a duplicated symbol.&quot;</li>
+<li>A conditional GDB breakpoint keyed on a specific <em>address</em> is the single
+most decisive tool for telling apart &quot;two different objects&quot; from &quot;one
+object, destroyed twice.&quot;</li>
+<li>Mutable, exported class-static objects are quietly dangerous in any
+codebase where the same library can plausibly be linked in more than one
+form (source vs. prebuilt, static vs. shared) into the same binary.
+Prefer function-local statics, or avoid mutable global state entirely.</li>
+<li>Fixing the symptom in the library (function-local static) and fixing the
+root cause in the build graph (deduplicate the dependency) are both
+worth doing: one makes the crash impossible, the other makes the
+duplication itself go away.</li>
+</ul>
+<h2>Example implementation</h2>
+<p>A simplified, self-contained reproduction of this issue is available at
+<a href="https://github.com/the-offclock/static-double-free">github.com/the-offclock/static-double-free</a>.</p>
+
+  
+  <div class="post-tags">
+    <a href="/tags/cpp/" class="tag">C++</a>
+    <a href="/tags/debugging/" class="tag">Debugging</a>
+    <a href="/tags/linker/" class="tag">Linker</a>
+    <a href="/tags/build-systems/" class="tag">Build Systems</a>
+  </div>
+  
+</article>
+<a href="/" class="back-link">&larr; back</a>
+
+  </main>
+  <footer>
+    <hr class="site-divider">
+    <p>&copy; offclock      &middot;      <a href="/feed.xml">rss</a></p>
+  </footer>
+  <div class="lightbox-overlay" id="lightbox">
+    <img src="" alt="">
+  </div>
+  <script>
+    (function () {
+      var overlay = document.getElementById("lightbox");
+      var overlayImg = overlay.querySelector("img");
+      document.querySelectorAll("article.post img[src$='.svg']").forEach(function (img) {
+        img.addEventListener("click", function () {
+          overlayImg.src = img.src;
+          overlayImg.alt = img.alt;
+          overlay.classList.add("active");
+        });
+      });
+      overlay.addEventListener("click", function () {
+        overlay.classList.remove("active");
+      });
+    })();
+    document.querySelectorAll("pre").forEach(function (pre) {
+      var btn = document.createElement("button");
+      btn.className = "copy-btn";
+      btn.textContent = "copy";
+      btn.addEventListener("click", function () {
+        var code = pre.querySelector("code");
+        navigator.clipboard.writeText((code || pre).textContent).then(function () {
+          btn.textContent = "copied";
+          setTimeout(function () { btn.textContent = "copy"; }, 1500);
+        });
+      });
+      pre.style.position = "relative";
+      pre.appendChild(btn);
+    });
+  </script>
+</body>
+</html>

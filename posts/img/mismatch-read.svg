@@ -1,0 +1,125 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 740 500" fill="none">
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    .label { fill: #c9d1d9; font-size: 12px; }
+    .label-sm { fill: #8b949e; font-size: 10px; }
+    .label-bold { fill: #c9d1d9; font-size: 13px; font-weight: 600; }
+    .label-mono { fill: #c9d1d9; font-size: 11px; font-family: "JetBrains Mono", "Fira Code", monospace; }
+    .accent { fill: #88f47d; font-size: 11px; font-weight: 500; }
+    .danger { fill: #f85149; font-size: 11px; font-weight: 600; }
+    .danger-lg { fill: #f85149; font-size: 12px; font-weight: 600; }
+    .warn { fill: #d29922; font-size: 11px; font-weight: 500; }
+    .blue { fill: #58a6ff; font-size: 11px; font-weight: 500; }
+    .offset { fill: #8b949e; font-size: 10px; font-family: "JetBrains Mono", "Fira Code", monospace; }
+    .field-ok { stroke: #3d5a3a; stroke-width: 1.5; fill: #1a2e1a; rx: 3; }
+    .field-wrong { stroke: #6e3b15; stroke-width: 1.5; fill: #2a1a0a; rx: 3; }
+    .field-oob { stroke: #5a1a1a; stroke-width: 1.5; fill: #1c0b0b; rx: 3; }
+    .arrow-ok { stroke: #88f47d; stroke-width: 1; fill: none; marker-end: url(#arr-ok); }
+    .arrow-wrong { stroke: #d29922; stroke-width: 1; fill: none; marker-end: url(#arr-wrong); }
+    .arrow-oob { stroke: #f85149; stroke-width: 1; fill: none; marker-end: url(#arr-oob); }
+  </style>
+  <defs>
+    <marker id="arr-ok" markerWidth="6" markerHeight="4" refX="6" refY="2" orient="auto">
+      <polygon points="0 0, 6 2, 0 4" fill="#88f47d"/>
+    </marker>
+    <marker id="arr-wrong" markerWidth="6" markerHeight="4" refX="6" refY="2" orient="auto">
+      <polygon points="0 0, 6 2, 0 4" fill="#d29922"/>
+    </marker>
+    <marker id="arr-oob" markerWidth="6" markerHeight="4" refX="6" refY="2" orient="auto">
+      <polygon points="0 0, 6 2, 0 4" fill="#f85149"/>
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text class="label-bold" x="370" y="22" text-anchor="middle">New-ABI consumer reads old-ABI path object</text>
+  <text class="label-sm" x="370" y="38" text-anchor="middle">Consumer expects 40 bytes — actual object is only 16 bytes</text>
+
+  <!-- ==================== MEMORY COLUMN (center-left) ==================== -->
+  <text class="label-bold" x="175" y="66" text-anchor="middle">Memory at object address</text>
+
+  <!-- Block 1: offset 0–7 (COW pointer — valid, roughly compatible) -->
+  <rect class="field-ok" x="70" y="80" width="210" height="56"/>
+  <text class="label-mono" x="84" y="102">COW pointer</text>
+  <text class="label-sm" x="84" y="118">→ heap block with string data</text>
+  <text class="offset" x="62" y="102" text-anchor="end">+0</text>
+
+  <!-- Block 2: offset 8–15 (_M_cmpts — valid, but misinterpreted) -->
+  <rect class="field-wrong" x="70" y="140" width="210" height="56"/>
+  <text class="label-mono" x="84" y="162">_M_cmpts</text>
+  <text class="label-sm" x="84" y="178">component list (old ABI)</text>
+  <text class="offset" x="62" y="162" text-anchor="end">+8</text>
+
+  <!-- Object boundary marker -->
+  <line x1="50" y1="204" x2="296" y2="204" stroke="#f85149" stroke-width="2"/>
+  <rect x="95" y="208" width="160" height="22" rx="3" fill="#1c0b0b" stroke="#f85149" stroke-width="1"/>
+  <text class="danger" x="175" y="224" text-anchor="middle">end of actual object</text>
+
+  <!-- Block 3: offset 16–31 (out of bounds) -->
+  <rect class="field-oob" x="70" y="240" width="210" height="108"/>
+  <text class="label-mono" x="84" y="262">??? adjacent memory</text>
+  <text class="label-sm" x="84" y="280">could be another variable,</text>
+  <text class="label-sm" x="84" y="296">padding, freed heap data,</text>
+  <text class="label-sm" x="84" y="312">or anything else</text>
+  <text class="label-sm" x="84" y="330">(16 bytes)</text>
+  <text class="offset" x="62" y="280" text-anchor="end">+16</text>
+
+  <!-- Block 4: offset 32–39 (out of bounds) -->
+  <rect class="field-oob" x="70" y="352" width="210" height="56"/>
+  <text class="label-mono" x="84" y="374">??? more adjacent memory</text>
+  <text class="label-sm" x="84" y="390">(8 bytes)</text>
+  <text class="offset" x="62" y="374" text-anchor="end">+32</text>
+
+  <!-- End offset -->
+  <text class="offset" x="62" y="424" text-anchor="end">+40</text>
+  <line x1="66" y1="420" x2="280" y2="420" stroke="#8b949e" stroke-width="1" stroke-dasharray="3 3"/>
+  <text class="label-sm" x="175" y="438" text-anchor="middle">consumer reads up to here</text>
+
+  <!-- ==================== CONSUMER INTERPRETATION (right) ==================== -->
+  <text class="label-bold" x="565" y="66" text-anchor="middle">Consumer interprets as</text>
+
+  <!-- Interpretation 1: _M_pathname.ptr (roughly OK) -->
+  <path class="arrow-ok" d="M 288 108 L 420 108"/>
+  <rect x="428" y="86" width="280" height="46" rx="4" fill="#0f1a0f" stroke="#3d5a3a" stroke-width="1"/>
+  <text class="accent" x="442" y="104">_M_pathname.ptr</text>
+  <text class="label-sm" x="442" y="122">both ABIs have a pointer at +0</text>
+  <text class="accent" x="696" y="110" text-anchor="end">&#x2248;</text>
+
+  <!-- Interpretation 2: _M_pathname.length (WRONG — reads _M_cmpts as length) -->
+  <path class="arrow-wrong" d="M 288 168 L 420 168"/>
+  <rect x="428" y="146" width="280" height="46" rx="4" fill="#1a1206" stroke="#6e3b15" stroke-width="1"/>
+  <text class="warn" x="442" y="164">_M_pathname.length</text>
+  <text class="label-sm" x="442" y="182">reads _M_cmpts as string length</text>
+  <text class="danger-lg" x="696" y="170" text-anchor="end">&#x2717;</text>
+
+  <!-- Callout: the trillion-value -->
+  <rect x="458" y="196" width="230" height="26" rx="3" fill="#1c0b0b" stroke="#5a1a1a" stroke-width="1"/>
+  <text class="danger" x="573" y="214" text-anchor="middle">→ value in the trillions (0x25590...)</text>
+
+  <!-- Interpretation 3: _M_pathname.union (OUT OF BOUNDS) -->
+  <path class="arrow-oob" d="M 288 290 L 420 290"/>
+  <rect x="428" y="262" width="280" height="60" rx="4" fill="#1c0b0b" stroke="#5a1a1a" stroke-width="1"/>
+  <text class="danger" x="442" y="282">_M_pathname.buf / capacity</text>
+  <text class="label-sm" x="442" y="300">reads adjacent memory as string</text>
+  <text class="label-sm" x="442" y="314">inline buffer or capacity value</text>
+  <text class="danger-lg" x="696" y="292" text-anchor="end">&#x2717;</text>
+
+  <!-- Interpretation 4: _M_cmpts (OUT OF BOUNDS) -->
+  <path class="arrow-oob" d="M 288 380 L 420 380"/>
+  <rect x="428" y="358" width="280" height="46" rx="4" fill="#1c0b0b" stroke="#5a1a1a" stroke-width="1"/>
+  <text class="danger" x="442" y="376">_M_cmpts</text>
+  <text class="label-sm" x="442" y="394">reads garbage as component list</text>
+  <text class="danger-lg" x="696" y="382" text-anchor="end">&#x2717;</text>
+
+  <!-- Legend at bottom -->
+  <rect x="428" y="430" width="14" height="14" rx="2" fill="#1a2e1a" stroke="#3d5a3a" stroke-width="1"/>
+  <text class="label-sm" x="448" y="442">roughly compatible</text>
+  <rect x="530" y="430" width="14" height="14" rx="2" fill="#2a1a0a" stroke="#6e3b15" stroke-width="1"/>
+  <text class="label-sm" x="550" y="442">misinterpreted</text>
+  <rect x="632" y="430" width="14" height="14" rx="2" fill="#1c0b0b" stroke="#5a1a1a" stroke-width="1"/>
+  <text class="label-sm" x="652" y="442">out of bounds</text>
+
+  <!-- Summary callout -->
+  <rect x="428" y="456" width="280" height="34" rx="4" fill="#1c0b0b" stroke="#f85149" stroke-width="1"/>
+  <text class="danger" x="568" y="472" text-anchor="middle">24 of 40 bytes are garbage</text>
+  <text class="danger" x="568" y="484" text-anchor="middle">→ SIGSEGV</text>
+</svg>

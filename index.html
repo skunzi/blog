@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>offclock / writing</title>
+  <meta name="description" content="Deep dives into C++ debugging, ABI mismatches, linker behavior, and build system pitfalls.">
+  <meta name="author" content="offclock">
+  <link rel="canonical" href="https://blog.offclock.dev/">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="/apple-touch-icon.png">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+
+  <!-- RSS -->
+  <link rel="alternate" type="application/atom+xml" title="offclock / writing" href="/feed.xml">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="offclock / writing">
+  <meta property="og:description" content="Deep dives into C++ debugging, ABI mismatches, linker behavior, and build system pitfalls.">
+  <meta property="og:url" content="https://blog.offclock.dev/">
+  <meta property="og:image" content="https://blog.offclock.dev/og-image.png">
+  <meta property="og:site_name" content="offclock / writing">
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="offclock / writing">
+  <meta name="twitter:description" content="Deep dives into C++ debugging, ABI mismatches, linker behavior, and build system pitfalls.">
+  <meta name="twitter:image" content="https://blog.offclock.dev/og-image.png">
+
+  
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebSite",
+    "name": "offclock / writing",
+    "description": "Deep dives into C++ debugging, ABI mismatches, linker behavior, and build system pitfalls.",
+    "url": "https://blog.offclock.dev",
+    "author": {
+      "@type": "Person",
+      "name": "offclock",
+      "url": "https://offclock.dev"
+    }
+  }
+  </script>
+  
+
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <header>
+    <a href="/" class="site-logo"><img src="/logo.svg" alt="offclock / writing"></a>
+    <hr class="site-divider">
+    <nav class="site-nav">
+      <a href="/">writing</a>
+    </nav>
+  </header>
+  <main>
+    <h1 class="sr-only">Posts</h1>
+<ul class="post-list">
+  <li class="post-item">
+    <a href="/posts/the-static-that-died-twice/">
+      <div class="post-title">The Static That Died Twice</div>
+      <time class="post-date" datetime="2026-09-02T00:00:00.000Z">SEP 02, 2026</time>
+      <div class="post-summary">A field report from debugging a double-free crash that only showed up after all tests had already passed.</div>
+    </a>
+  </li>
+  <li class="post-item">
+    <a href="/posts/abi-mismatch-memory-behavior/">
+      <div class="post-title">ABI Mismatch Under the Hood</div>
+      <time class="post-date" datetime="2026-08-16T00:00:00.000Z">AUG 16, 2026</time>
+      <div class="post-summary">A byte-level walkthrough of how std::filesystem::path&#39;s memory layout differs between GCC ABI versions, and exactly why reading one layout as the other causes a segfault.</div>
+    </a>
+  </li>
+  <li class="post-item">
+    <a href="/posts/abi-mismatch/">
+      <div class="post-title">The Segfault That Passed Code Review</div>
+      <time class="post-date" datetime="2026-08-09T00:00:00.000Z">AUG 09, 2026</time>
+      <div class="post-summary">How a stale Conan profile in our Bazel monorepo turned std::filesystem::path into a ticking time bomb.</div>
+    </a>
+  </li>
+</ul>
+
+  </main>
+  <footer>
+    <hr class="site-divider">
+    <p>&copy; offclock      &middot;      <a href="/feed.xml">rss</a></p>
+  </footer>
+  <div class="lightbox-overlay" id="lightbox">
+    <img src="" alt="">
+  </div>
+  <script>
+    (function () {
+      var overlay = document.getElementById("lightbox");
+      var overlayImg = overlay.querySelector("img");
+      document.querySelectorAll("article.post img[src$='.svg']").forEach(function (img) {
+        img.addEventListener("click", function () {
+          overlayImg.src = img.src;
+          overlayImg.alt = img.alt;
+          overlay.classList.add("active");
+        });
+      });
+      overlay.addEventListener("click", function () {
+        overlay.classList.remove("active");
+      });
+    })();
+    document.querySelectorAll("pre").forEach(function (pre) {
+      var btn = document.createElement("button");
+      btn.className = "copy-btn";
+      btn.textContent = "copy";
+      btn.addEventListener("click", function () {
+        var code = pre.querySelector("code");
+        navigator.clipboard.writeText((code || pre).textContent).then(function () {
+          btn.textContent = "copied";
+          setTimeout(function () { btn.textContent = "copy"; }, 1500);
+        });
+      });
+      pre.style.position = "relative";
+      pre.appendChild(btn);
+    });
+  </script>
+</body>
+</html>

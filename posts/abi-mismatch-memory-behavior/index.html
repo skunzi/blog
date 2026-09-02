@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ABI Mismatch Under the Hood — offclock / writing</title>
+  <meta name="description" content="A byte-level walkthrough of how std::filesystem::path&#39;s memory layout differs between GCC ABI versions, and exactly why reading one layout as the other causes a segfault.">
+  <meta name="author" content="offclock">
+  <link rel="canonical" href="https://blog.offclock.dev/posts/abi-mismatch-memory-behavior/">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="/apple-touch-icon.png">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+
+  <!-- RSS -->
+  <link rel="alternate" type="application/atom+xml" title="offclock / writing" href="/feed.xml">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="ABI Mismatch Under the Hood">
+  <meta property="og:description" content="A byte-level walkthrough of how std::filesystem::path&#39;s memory layout differs between GCC ABI versions, and exactly why reading one layout as the other causes a segfault.">
+  <meta property="og:url" content="https://blog.offclock.dev/posts/abi-mismatch-memory-behavior/">
+  <meta property="og:image" content="https://blog.offclock.dev/og-image.png">
+  <meta property="og:site_name" content="offclock / writing">
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="ABI Mismatch Under the Hood">
+  <meta name="twitter:description" content="A byte-level walkthrough of how std::filesystem::path&#39;s memory layout differs between GCC ABI versions, and exactly why reading one layout as the other causes a segfault.">
+  <meta name="twitter:image" content="https://blog.offclock.dev/og-image.png">
+
+  
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BlogPosting",
+    "headline": "ABI Mismatch Under the Hood",
+    "description": "A byte-level walkthrough of how std::filesystem::path&#39;s memory layout differs between GCC ABI versions, and exactly why reading one layout as the other causes a segfault.",
+    "datePublished": "2026-08-16T00:00:00.000Z",
+    "author": {
+      "@type": "Person",
+      "name": "offclock",
+      "url": "https://offclock.dev"
+    },
+    "publisher": {
+      "@type": "Person",
+      "name": "offclock",
+      "url": "https://offclock.dev"
+    },
+    "url": "https://blog.offclock.dev/posts/abi-mismatch-memory-behavior/",
+    "mainEntityOfPage": "https://blog.offclock.dev/posts/abi-mismatch-memory-behavior/"
+  }
+  </script>
+  
+
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <header>
+    <a href="/" class="site-logo"><img src="/logo.svg" alt="offclock / writing"></a>
+    <hr class="site-divider">
+    <nav class="site-nav">
+      <a href="/">writing</a>
+    </nav>
+  </header>
+  <main>
+    <article class="post">
+  <h1>ABI Mismatch Under the Hood</h1>
+  <div class="post-meta">
+    <time datetime="2026-08-16T00:00:00.000Z">AUG 16, 2026</time>
+    <span class="reading-time">11 min read</span>
+  </div>
+  <p><em>This is a companion to <a href="/posts/abi-mismatch/">The Segfault That Passed Code Review</a>.
+That article covers the debugging story and the Conan profile that caused it. This
+one goes deeper into the mechanics: what the compiler bakes into your binary, how
+the memory layouts differ byte by byte, and exactly what goes wrong when the two
+meet at runtime.</em></p>
+<h2>How <code>std::filesystem</code> is linked</h2>
+<p><code>std::filesystem</code> didn't always live where it does today. Its home in libstdc++
+shifted between GCC 8 and GCC 9, and that shift matters for understanding
+what the runtime expects.</p>
+<p><strong>GCC 8:</strong> The filesystem implementation shipped in a separate static library.
+You had to link it explicitly:</p>
+<pre><code>g++ -std=c++17 main.cpp -lstdc++fs
+</code></pre>
+<p><code>libstdc++fs.a</code> was a static archive. When you linked against it, the
+compiled filesystem routines (including <code>parent_path()</code>, <code>filename()</code>, and the parser)
+were copied directly into your binary. Your executable carried its own
+private copy of the implementation, baked in at link time.</p>
+<p><strong>GCC 9 and later:</strong> The implementation moved into the main shared library,
+<code>libstdc++.so</code>. No extra flag needed:</p>
+<pre><code>g++ -std=c++17 main.cpp    # links libstdc++.so automatically
+</code></pre>
+<p>The filesystem routines now live alongside <code>std::string</code>, <code>std::vector</code>,
+and everything else in the same shared library your binary loads at
+startup.</p>
+<p>This transition matters. With GCC 8, the implementation of
+<code>parent_path()</code> lives <em>in your binary</em>, compiled when you compiled,
+with whatever ABI flags you used. With GCC 9+, <code>parent_path()</code> lives <em>in
+the shared library on the system</em>, compiled once with the ABI
+that the system's libstdc++ was built with. If your binary creates a
+<code>path</code> object with one ABI and then hands it to a <code>libstdc++.so</code> that
+was built with a different ABI, the two sides disagree on the object's
+memory layout. That disagreement is the root cause of the crash.</p>
+<h2>What happens when you create a <code>path</code> object</h2>
+<p>When you write this:</p>
+<pre class="language-cpp"><code class="language-cpp">std<span class="token double-colon punctuation">::</span>filesystem<span class="token double-colon punctuation">::</span>path <span class="token function">p</span><span class="token punctuation">(</span><span class="token string">"/usr/share/config/app.conf"</span><span class="token punctuation">)</span><span class="token punctuation">;</span></code></pre>
+<p>several things are decided at compile time, before the program ever runs.</p>
+<h3>The header defines the layout</h3>
+<p>The compiler reads the <code>&lt;filesystem&gt;</code> header, which includes
+<code>bits/fs_path.h</code>. That header contains the class definition for
+<code>std::filesystem::path</code>. Stripped to the essentials:</p>
+<pre class="language-cpp"><code class="language-cpp"><span class="token comment">// Simplified from bits/fs_path.h</span>
+<span class="token keyword">class</span> <span class="token class-name">path</span> <span class="token punctuation">{</span>
+    <span class="token comment">// ...</span>
+<span class="token keyword">private</span><span class="token operator">:</span>
+    std<span class="token double-colon punctuation">::</span>string  _M_pathname<span class="token punctuation">;</span>   <span class="token comment">// the full path as a string</span>
+    _List        _M_cmpts<span class="token punctuation">;</span>      <span class="token comment">// parsed path components</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span></code></pre>
+<p>From this definition the compiler determines the <strong>exact byte-level
+layout</strong> of the type: total size, offset of every field, alignment
+requirements. Not an approximation, but the precise numbers that will
+appear as constants in the generated machine code.</p>
+<p>Since <code>path</code> contains a <code>std::string</code> as its first member, the layout
+of <code>path</code> depends on the layout of <code>std::string</code>. And <code>std::string</code> has
+<em>two</em> layouts in libstdc++, controlled by the <code>_GLIBCXX_USE_CXX11_ABI</code>
+macro:</p>
+<ul>
+<li><strong>Old ABI</strong> (<code>_GLIBCXX_USE_CXX11_ABI=0</code>): <code>std::string</code> is <strong>8 bytes</strong>: a
+single pointer to a heap-allocated control block that stores the length,
+capacity, reference count, and character data together (copy-on-write).</li>
+<li><strong>New ABI</strong> (<code>_GLIBCXX_USE_CXX11_ABI=1</code>): <code>std::string</code> is <strong>32 bytes</strong>: a
+pointer, a length, and a union holding either a 16-byte inline character
+buffer or a capacity value (small-string optimization).</li>
+</ul>
+<p>Which layout the compiler uses depends entirely on which ABI flag was
+active when the header was parsed. The same header, the same field names,
+two completely different memory layouts.</p>
+<h3>The layout is baked into your binary</h3>
+<p>This is the critical point. The compiler does not generate code that asks
+&quot;how big is <code>std::filesystem::path</code>?&quot; at runtime. It already knows. The
+size is a compile-time constant, fixed the moment the header was parsed.</p>
+<p>Every operation the compiler generates (stack frame allocation, field
+access, copying, passing by reference) uses <strong>hardcoded offsets</strong>
+derived from the header. If the header said <code>_M_cmpts</code> is at offset 32
+(because the string before it occupies 32 bytes in the new ABI), then
+every access to <code>_M_cmpts</code> in your binary will read from
+<code>start_of_object + 32</code>. That offset is a literal number in the machine
+code. It will never change at runtime.</p>
+<img src="/posts/img/path-compile-bake.svg" alt="Diagram showing how the bits/fs_path.h header is compiled into a binary with hardcoded field offsets. The header defines the class with string and _List members; the compiler resolves these to concrete byte offsets (+0, +8, +16, +32) that become constants in the binary's machine code. sizeof(path) = 40 is fixed at compile time.">
+<p>The constructor and destructor work the same way. They are defined in
+the header and typically inlined by the compiler. Your binary contains
+the constructor code that initializes each field at its expected offset,
+and the destructor code that tears down each field at its expected
+offset. Both are hardcoded to the layout the compiler saw.</p>
+<p>This means your binary doesn't just know <em>how big</em> a path object is. It
+knows exactly how to create one and how to destroy one, using the layout
+that was determined at compile time. If a different binary was compiled
+with different ABI flags, it will create and destroy path objects using
+a <em>different</em> layout, and neither binary has any way to detect the
+mismatch at runtime.</p>
+<h2>Two compilers, two layouts</h2>
+<p>With that background, here is what concretely differs between a <code>path</code>
+object compiled with the old ABI and the new ABI.</p>
+<h3>Old ABI: GCC 8, <code>_GLIBCXX_USE_CXX11_ABI=0</code></h3>
+<pre><code>Offset   Size   Field
+──────   ────   ──────────────────────────
+  +0      8     _M_pathname  (COW pointer → heap block)
+  +8      8     _M_cmpts     (component storage)
+──────
+ 16 bytes total
+</code></pre>
+<p><code>_M_pathname</code> is a single 8-byte pointer. All the string metadata (length,
+capacity, and reference count) and the character data itself live in a single
+heap-allocated block that the pointer references.</p>
+<h3>New ABI: GCC 12, <code>_GLIBCXX_USE_CXX11_ABI=1</code></h3>
+<pre><code>Offset   Size   Field
+──────   ────   ──────────────────────────
+  +0      8     _M_pathname.ptr      (pointer to char data)
+  +8      8     _M_pathname.length   (string length)
+ +16     16     _M_pathname.union    (inline buf[16] or capacity)
+ +32      8     _M_cmpts             (component storage)
+──────
+ 40 bytes total
+</code></pre>
+<p><code>_M_pathname</code> now stores its pointer, length, and either a 16-byte inline
+character buffer (for short strings ≤ 15 chars) or a heap capacity, all
+in 32 bytes, directly inside the path object.</p>
+<img src="/posts/img/path-layout-comparison.svg" alt="Side-by-side comparison of std::filesystem::path memory layout under old ABI (16 bytes: 8-byte COW pointer + 8-byte component storage) versus new ABI (40 bytes: 8-byte pointer + 8-byte length + 16-byte union for inline buffer or capacity + 8-byte component storage). The old ABI object ends at offset 16, less than half the size of the new ABI layout.">
+<p>The two layouts are not compatible. They disagree on the size of the
+object, the offset of every field after the first, and how <code>std::string</code>
+manages its memory internally. Code compiled against one layout cannot
+safely read or write an object created with the other.</p>
+<h2>The collision: reading 40 bytes from a 16-byte object</h2>
+<p>Here is the memory-level picture when the two ABIs collide. A shared
+library was compiled with the old ABI. It creates a
+<code>std::filesystem::path</code> object of 16 bytes. Your binary was compiled
+with the new ABI. It receives a pointer to that object and interprets it
+as a 40-byte struct.</p>
+<p>What does the binary see?</p>
+<img src="/posts/img/mismatch-read.svg" alt="Diagram showing a 16-byte old-ABI path object in memory, followed by adjacent unrelated memory. The new-ABI consumer reads 40 bytes from this location: bytes 0–7 (COW pointer) are roughly compatible with the expected ptr field; bytes 8–15 (_M_cmpts) are misinterpreted as string length, producing a value in the trillions; bytes 16–39 are outside the object entirely, reading whatever garbage happens to be in adjacent memory. 24 of 40 bytes the consumer reads are garbage.">
+<p>Walking through each byte range:</p>
+<p><strong>Bytes 0–7 (<code>_M_pathname.ptr</code>):</strong> Both ABIs store a pointer at
+offset 0. The old ABI's COW pointer happens to point to a heap block
+where the character data eventually sits (after the length, capacity,
+and refcount fields). This is not <em>identical</em> to the new ABI's data
+pointer, but it's close enough that GDB can sometimes follow it and
+display the string content. Coincidental compatibility, not safety.</p>
+<p><strong>Bytes 8–15 (<code>_M_pathname.length</code>):</strong> The new-ABI consumer reads
+these 8 bytes as the string's <em>length</em>. But in the old-ABI object,
+bytes 8–15 are <code>_M_cmpts</code>, the component storage pointer or
+small-buffer state. A heap address interpreted as a string length
+produces a number in the trillions. Any code that uses this length to
+iterate over the string will read far past the end of any valid buffer.</p>
+<p><strong>Bytes 16–31 (<code>_M_pathname.union</code>):</strong> The consumer expects 16 bytes
+of inline string buffer or capacity here. But the old-ABI object is
+only 16 bytes long. These bytes don't belong to the <code>path</code> object at
+all. They are whatever happens to sit in adjacent memory: another local
+variable, alignment padding, freed heap metadata, part of a different
+object. The content is uncontrolled and unpredictable.</p>
+<p><strong>Bytes 32–39 (<code>_M_cmpts</code>):</strong> The consumer reads these 8 bytes as the
+component storage. Again, well outside the object. Pure garbage.</p>
+<p>The binary is reading a 40-byte struct from a 16-byte region. The first
+8 bytes are roughly compatible by accident. The next 8 bytes are wildly
+misinterpreted. And the final 24 bytes are whatever happened to be
+adjacent in memory.</p>
+<h2>What <code>libstdc++.so</code> expects</h2>
+<p>If the consumer calls a member function like <code>parent_path()</code>, the call
+doesn't stay inside the binary. <code>parent_path()</code> is implemented in
+<code>libstdc++.so</code>, the system's shared C++ standard library. That shared
+library was built with the new ABI. It expects every <code>path</code> object it
+receives to be 40 bytes laid out according to the new-ABI specification.</p>
+<p>The call chain goes like this:</p>
+<ol>
+<li>Your binary passes a <code>const path&amp;</code>, a pointer to what it believes
+is a 40-byte object</li>
+<li><code>libstdc++.so</code>'s <code>parent_path()</code> dereferences that pointer and reads
+the object's fields using new-ABI offsets</li>
+<li>It reads <code>_M_pathname.length</code> from offset +8 and gets a garbage value
+(it's actually the old-ABI <code>_M_cmpts</code> field)</li>
+<li>It reads <code>_M_cmpts</code> from offset +32 and gets garbage (24 bytes past
+the end of the real object)</li>
+<li>When it tries to use any of these values (iterating path components,
+reading the string, checking bounds), it dereferences invalid pointers
+or reads nonsensical lengths</li>
+</ol>
+<p>The result is a SIGSEGV inside <code>libstdc++.so</code>, in a function that is
+perfectly correct. The function is doing exactly what it should: reading
+fields at their documented offsets. The problem is that the object it
+received was built to a different blueprint.</p>
+<p>But in the <a href="/posts/abi-mismatch/">real-world incident</a>, the crash didn't
+require a method call. It came from something more fundamental: the
+destructor.</p>
+<h2>Why the destructor crashes</h2>
+<p>Even if you never call <code>parent_path()</code> or any other member function on
+the mismatched object, the destructor alone is enough to crash. Here's
+why.</p>
+<p>C++ destroys class members in reverse declaration order. For
+<code>std::filesystem::path</code>, the members are:</p>
+<pre class="language-cpp"><code class="language-cpp"><span class="token keyword">class</span> <span class="token class-name">path</span> <span class="token punctuation">{</span>
+    string_type _M_pathname<span class="token punctuation">;</span>   <span class="token comment">// destroyed second</span>
+    _List       _M_cmpts<span class="token punctuation">;</span>      <span class="token comment">// destroyed first</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span></code></pre>
+<p>The destructor starts with <code>_M_cmpts</code>. In the new-ABI layout, <code>_M_cmpts</code>
+sits at offset +32. But the old-ABI object is only 16 bytes. Offset +32
+is 16 bytes past the end of the object.</p>
+<p>When the new-ABI destructor runs on the old-ABI object:</p>
+<ol>
+<li>It reads <code>_M_cmpts</code> at offset +32. This is outside the object —
+whatever sits in adjacent memory is interpreted as a
+<code>unique_ptr&lt;_Impl&gt;</code> (a pointer to the component list implementation)</li>
+<li>If that garbage value is non-null, the <code>unique_ptr</code>'s destructor
+calls <code>_Impl_deleter::operator()</code> on it — dereferencing a garbage
+pointer</li>
+<li>SIGSEGV: the garbage pointer (in the real incident, <code>0x1a</code> — a
+string length leaked from an adjacent COW control block) refers to
+unmapped memory</li>
+</ol>
+<p>The destructor never even reaches <code>_M_pathname</code>. It crashes on the first
+member it tries to destroy.</p>
+<p>If the garbage at offset +32 happened to be zero (null pointer), the
+<code>unique_ptr</code> destructor would skip the delete and proceed to
+<code>_M_pathname.~basic_string()</code>. That destructor has its own mismatch
+problem: its SSO check compares the data pointer (at offset +0) against
+the inline buffer address (at offset +16) to decide whether to call
+<code>operator delete</code>. The old-ABI COW pointer at offset +0 doesn't point
+to offset +16, so the destructor calls <code>free()</code> on the COW pointer — an
+interior pointer into a control block, not a valid <code>free()</code> argument.
+Either way, the program crashes.</p>
+<p>This also explains why the crash is <em>non-local</em>: the old-ABI library
+that created the object runs perfectly fine. Its destructor would have
+cleaned up the 16-byte object correctly using the old-ABI layout. But
+if the object crosses the boundary and the new-ABI consumer's destructor
+runs instead, that destructor operates on a layout it doesn't understand.
+The fault is at the boundary, not in either side's code.</p>
+<h2>C++ types are not self-describing</h2>
+<p>The fundamental issue is that C++ objects carry no runtime metadata about
+their layout. A <code>std::filesystem::path</code> doesn't have a tag saying &quot;I am
+16 bytes&quot; or &quot;I am 40 bytes.&quot; The compiler bakes the layout into the
+consuming code, and the consuming code trusts that every object it
+receives matches that layout. There is no runtime check.</p>
+<p>When two separately compiled binaries disagree on the layout, nothing
+catches the mismatch:</p>
+<ul>
+<li><strong>Not the compiler:</strong> it only sees one translation unit at a time,
+and each side compiles cleanly against its own version of the header</li>
+<li><strong>Not the linker:</strong> it checks symbol names, not type layouts. If
+the symbol crosses through C linkage or <code>void*</code>, the linker sees
+matching, undecorated symbols on both sides</li>
+<li><strong>Not the runtime:</strong> there is no layout metadata to compare. The
+pointer is dereferenced directly, using the baked-in offsets</li>
+</ul>
+<p>This is why ABI mismatches are among the hardest bugs to find. The code
+is correct. The logic is correct. The types match in source. Everything
+compiles and links cleanly. And then a field access at the wrong offset
+segfaults, and the crash shows up inside <code>libstdc++.so</code>, in code you
+didn't write and can't easily debug.</p>
+<p>The defense is straightforward but requires discipline: build everything
+in the dependency tree (your own code, your third-party libraries, your
+prebuilt packages) with the same compiler, the same ABI flags, and the
+same standard library version. When that invariant breaks, the result is
+a silent, delayed, non-local segfault with no warning from any tool in
+the normal build pipeline. The <a href="/posts/abi-mismatch/">companion article</a>
+walks through a real-world case of this happening and what we did to
+prevent it from recurring.</p>
+
+  
+  <div class="post-tags">
+    <a href="/tags/cpp/" class="tag">C++</a>
+    <a href="/tags/debugging/" class="tag">Debugging</a>
+    <a href="/tags/abi/" class="tag">ABI</a>
+  </div>
+  
+</article>
+<a href="/" class="back-link">&larr; back</a>
+
+  </main>
+  <footer>
+    <hr class="site-divider">
+    <p>&copy; offclock      &middot;      <a href="/feed.xml">rss</a></p>
+  </footer>
+  <div class="lightbox-overlay" id="lightbox">
+    <img src="" alt="">
+  </div>
+  <script>
+    (function () {
+      var overlay = document.getElementById("lightbox");
+      var overlayImg = overlay.querySelector("img");
+      document.querySelectorAll("article.post img[src$='.svg']").forEach(function (img) {
+        img.addEventListener("click", function () {
+          overlayImg.src = img.src;
+          overlayImg.alt = img.alt;
+          overlay.classList.add("active");
+        });
+      });
+      overlay.addEventListener("click", function () {
+        overlay.classList.remove("active");
+      });
+    })();
+    document.querySelectorAll("pre").forEach(function (pre) {
+      var btn = document.createElement("button");
+      btn.className = "copy-btn";
+      btn.textContent = "copy";
+      btn.addEventListener("click", function () {
+        var code = pre.querySelector("code");
+        navigator.clipboard.writeText((code || pre).textContent).then(function () {
+          btn.textContent = "copied";
+          setTimeout(function () { btn.textContent = "copy"; }, 1500);
+        });
+      });
+      pre.style.position = "relative";
+      pre.appendChild(btn);
+    });
+  </script>
+</body>
+</html>

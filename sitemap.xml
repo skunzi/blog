@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://blog.offclock.dev/</loc>
+    <lastmod>2026-09-02T00:00:00.000Z</lastmod>
+  </url>
+  <url>
+    <loc>https://blog.offclock.dev/posts/the-static-that-died-twice/</loc>
+    <lastmod>2026-09-02T00:00:00.000Z</lastmod>
+  </url>
+  <url>
+    <loc>https://blog.offclock.dev/posts/abi-mismatch-memory-behavior/</loc>
+    <lastmod>2026-08-16T00:00:00.000Z</lastmod>
+  </url>
+  <url>
+    <loc>https://blog.offclock.dev/posts/abi-mismatch/</loc>
+    <lastmod>2026-08-09T00:00:00.000Z</lastmod>
+  </url>
+  <url>
+    <loc>https://blog.offclock.dev/tags/abi/</loc>
+  </url>
+  <url>
+    <loc>https://blog.offclock.dev/tags/build-systems/</loc>
+  </url>
+  <url>
+    <loc>https://blog.offclock.dev/tags/cpp/</loc>
+  </url>
+  <url>
+    <loc>https://blog.offclock.dev/tags/debugging/</loc>
+  </url>
+  <url>
+    <loc>https://blog.offclock.dev/tags/linker/</loc>
+  </url>
+</urlset>
