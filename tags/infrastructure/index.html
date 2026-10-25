@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>offclock / writing</title>
+  <meta name="description" content="Deep dives into C++ debugging, ABI mismatches, linker behavior, and build system pitfalls.">
+  <meta name="author" content="offclock">
+  <link rel="canonical" href="https://blog.offclock.dev/tags/infrastructure/">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="/apple-touch-icon.png">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+
+  <!-- RSS -->
+  <link rel="alternate" type="application/atom+xml" title="offclock / writing" href="/feed.xml">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="offclock / writing">
+  <meta property="og:description" content="Deep dives into C++ debugging, ABI mismatches, linker behavior, and build system pitfalls.">
+  <meta property="og:url" content="https://blog.offclock.dev/tags/infrastructure/">
+  <meta property="og:image" content="https://blog.offclock.dev/og-image.png">
+  <meta property="og:site_name" content="offclock / writing">
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="offclock / writing">
+  <meta name="twitter:description" content="Deep dives into C++ debugging, ABI mismatches, linker behavior, and build system pitfalls.">
+  <meta name="twitter:image" content="https://blog.offclock.dev/og-image.png">
+
+  
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebSite",
+    "name": "offclock / writing",
+    "description": "Deep dives into C++ debugging, ABI mismatches, linker behavior, and build system pitfalls.",
+    "url": "https://blog.offclock.dev",
+    "author": {
+      "@type": "Person",
+      "name": "offclock",
+      "url": "https://offclock.dev"
+    }
+  }
+  </script>
+  
+
+  <link rel="stylesheet" href="/css/style.css">
+  
+  <script>
+  (function () {
+    var endpoint = "https://offclock-analytics.offclock.workers.dev/event";
+    var page = location.pathname;
+    var start = Date.now();
+    var hidden = 0;
+    var hiddenAt = 0;
+
+    function send(data) {
+      try { navigator.sendBeacon(endpoint, new Blob([JSON.stringify(data)], { type: "text/plain" })); } catch (e) {}
+    }
+
+    send({ t: "pv", p: page, r: document.referrer });
+
+    document.addEventListener("visibilitychange", function () {
+      if (document.hidden) {
+        hiddenAt = Date.now();
+        sendDuration();
+      } else if (hiddenAt) {
+        hidden += Date.now() - hiddenAt;
+        hiddenAt = 0;
+      }
+    });
+    window.addEventListener("pagehide", sendDuration);
+
+    function sendDuration() {
+      var h = hidden + (hiddenAt ? Date.now() - hiddenAt : 0);
+      var dur = Math.max(0, Math.round((Date.now() - start - h) / 1000));
+      send({ t: "leave", p: page, d: dur });
+    }
+  })();
+  </script>
+  
+</head>
+<body>
+  <header>
+    <a href="/" class="site-logo"><img src="/logo.svg" alt="offclock / writing"></a>
+    <hr class="site-divider">
+    <nav class="site-nav">
+      <a href="/">writing</a>
+    </nav>
+  </header>
+  <main>
+    <h1 class="tag-heading">Infrastructure</h1>
+<ul class="post-list">
+  <li class="post-item">
+    <a href="/posts/single-point-of-failure/">
+      <div class="post-title">Single Point of Failure</div>
+      <time class="post-date" datetime="2026-09-06T00:00:00.000Z">SEP 06, 2026</time>
+      <div class="post-summary">How an artifact repository outage paralyzed every developer workflow in a Bazel monorepo, from spinning up a devcontainer to making a commit.</div>
+    </a>
+  </li>
+</ul>
+<a href="/" class="back-link">&larr; all posts</a>
+
+  </main>
+  <footer>
+    <hr class="site-divider">
+    <p>&copy; offclock      &middot;      <a href="/feed.xml">rss</a></p>
+  </footer>
+  <div class="lightbox-overlay" id="lightbox">
+    <img src="" alt="">
+  </div>
+  <script>
+    (function () {
+      var overlay = document.getElementById("lightbox");
+      var overlayImg = overlay.querySelector("img");
+      document.querySelectorAll("article.post img[src$='.svg']").forEach(function (img) {
+        img.addEventListener("click", function () {
+          overlayImg.src = img.src;
+          overlayImg.alt = img.alt;
+          overlay.classList.add("active");
+        });
+      });
+      overlay.addEventListener("click", function () {
+        overlay.classList.remove("active");
+      });
+    })();
+    document.querySelectorAll("pre").forEach(function (pre) {
+      var btn = document.createElement("button");
+      btn.className = "copy-btn";
+      btn.textContent = "copy";
+      btn.addEventListener("click", function () {
+        var code = pre.querySelector("code");
+        navigator.clipboard.writeText((code || pre).textContent).then(function () {
+          btn.textContent = "copied";
+          setTimeout(function () { btn.textContent = "copy"; }, 1500);
+        });
+      });
+      pre.style.position = "relative";
+      pre.appendChild(btn);
+    });
+  </script>
+</body>
+</html>

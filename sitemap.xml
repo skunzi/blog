@@ -2,7 +2,15 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
     <loc>https://blog.offclock.dev/</loc>
-    <lastmod>2026-09-02T00:00:00.000Z</lastmod>
+    <lastmod>2026-10-25T00:00:00.000Z</lastmod>
+  </url>
+  <url>
+    <loc>https://blog.offclock.dev/posts/github-heatmap-interpretation/</loc>
+    <lastmod>2026-10-25T00:00:00.000Z</lastmod>
+  </url>
+  <url>
+    <loc>https://blog.offclock.dev/posts/single-point-of-failure/</loc>
+    <lastmod>2026-09-06T00:00:00.000Z</lastmod>
   </url>
   <url>
     <loc>https://blog.offclock.dev/posts/the-static-that-died-twice/</loc>
@@ -27,6 +35,12 @@
   </url>
   <url>
     <loc>https://blog.offclock.dev/tags/debugging/</loc>
+  </url>
+  <url>
+    <loc>https://blog.offclock.dev/tags/git/</loc>
+  </url>
+  <url>
+    <loc>https://blog.offclock.dev/tags/infrastructure/</loc>
   </url>
   <url>
     <loc>https://blog.offclock.dev/tags/linker/</loc>

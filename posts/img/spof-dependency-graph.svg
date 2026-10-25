@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 660 360" fill="none">
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    .label { fill: #c9d1d9; font-size: 13px; font-weight: 500; }
+    .label-lg { fill: #c9d1d9; font-size: 15px; font-weight: 600; }
+    .label-sm { fill: #8b949e; font-size: 11px; }
+    .label-status { fill: #f85149; font-size: 11px; font-weight: 600; letter-spacing: 0.5px; }
+    .box { stroke: #30363d; stroke-width: 1.5; rx: 6; fill: #161b22; }
+    .zone-down { stroke: #f85149; stroke-width: 1.5; rx: 8; stroke-dasharray: 6 3; }
+    .arrow { stroke: #f85149; stroke-width: 1.5; stroke-dasharray: 6 3; marker-end: url(#a); }
+  </style>
+  <defs>
+    <marker id="a" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#f85149"/>
+    </marker>
+  </defs>
+
+  <!-- Developer workflow boxes -->
+  <rect class="box" x="30" y="25" width="210" height="40"/>
+  <text class="label" x="135" y="50" text-anchor="middle">devcontainer startup</text>
+
+  <rect class="box" x="30" y="87" width="210" height="40"/>
+  <text class="label" x="135" y="112" text-anchor="middle">bazel build</text>
+
+  <rect class="box" x="30" y="149" width="210" height="40"/>
+  <text class="label" x="135" y="174" text-anchor="middle">architecture tool</text>
+
+  <rect class="box" x="30" y="211" width="210" height="40"/>
+  <text class="label" x="135" y="236" text-anchor="middle">pre-commit hooks</text>
+
+  <rect class="box" x="30" y="273" width="210" height="40"/>
+  <text class="label" x="135" y="298" text-anchor="middle">CI pipeline</text>
+
+  <!-- Artifactory zone -->
+  <rect class="zone-down" x="460" y="17" width="170" height="306" fill="#1c0b0b" fill-opacity="0.4"/>
+  <text class="label-lg" x="545" y="166" text-anchor="middle">Artifactory</text>
+  <text class="label-status" x="545" y="186" text-anchor="middle">UNREACHABLE</text>
+
+  <!-- Blocked arrows -->
+  <line class="arrow" x1="240" y1="45" x2="456" y2="45"/>
+  <line class="arrow" x1="240" y1="107" x2="456" y2="107"/>
+  <line class="arrow" x1="240" y1="169" x2="456" y2="169"/>
+  <line class="arrow" x1="240" y1="231" x2="456" y2="231"/>
+  <line class="arrow" x1="240" y1="293" x2="456" y2="293"/>
+
+  <!-- Annotation -->
+  <text class="label-sm" x="330" y="348" text-anchor="middle">Five independent workflows. One backend.</text>
+</svg>

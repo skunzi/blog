@@ -5,7 +5,7 @@
   <subtitle>Deep dives into C++ debugging, ABI mismatches, linker behavior, and build system pitfalls.</subtitle>
   <link href="https://blog.offclock.dev/feed.xml" rel="self" />
   <link href="https://blog.offclock.dev/" />
-  <updated>2026-09-02T00:00:00Z</updated>
+  <updated>2026-10-25T00:00:00Z</updated>
   <id>https://blog.offclock.dev/</id>
   <author>
     <name>offclock</name>
@@ -752,6 +752,163 @@ duplication itself go away.&lt;/li&gt;
 &lt;h2&gt;Example implementation&lt;/h2&gt;
 &lt;p&gt;A simplified, self-contained reproduction of this issue is available at
 &lt;a href=&quot;https://github.com/the-offclock/static-double-free&quot;&gt;github.com/the-offclock/static-double-free&lt;/a&gt;.&lt;/p&gt;
+</content>
+  </entry>
+  <entry>
+    <title>Single Point of Failure</title>
+    <link href="https://blog.offclock.dev/posts/single-point-of-failure/" />
+    <updated>2026-09-06T00:00:00Z</updated>
+    <id>https://blog.offclock.dev/posts/single-point-of-failure/</id>
+    <summary>How an artifact repository outage paralyzed every developer workflow in a Bazel monorepo, from spinning up a devcontainer to making a commit.</summary>
+    <content type="html">&lt;p&gt;&lt;em&gt;Our artifact repository went down on a Thursday afternoon. By Friday evening it was restored from a three-day-old backup, but in between: building was impossible, tools wouldn&#39;t start, and even committing code was blocked. Every developer workflow, through seemingly independent paths, depended on the same service.&lt;/em&gt;&lt;/p&gt;
+&lt;h2&gt;The infrastructure&lt;/h2&gt;
+&lt;p&gt;The setup: a C++ monorepo built with Bazel, devcontainers for local development, Artifactory as the central artifact repository, and GitHub Actions for CI. On a normal day the pieces fit together seamlessly. Artifactory serves Bazel&#39;s external dependencies, hosts tooling for the devcontainers, stores pre-commit hook binaries, and caches build artifacts for CI.&lt;/p&gt;
+&lt;p&gt;Then Artifactory went down. Not degraded, not slow: unreachable. Every HTTP request to it timed out. What followed was an education in how completely a single service can embed itself into every layer of a development workflow.&lt;/p&gt;
+&lt;h2&gt;The devcontainer won&#39;t start&lt;/h2&gt;
+&lt;p&gt;The first step of any workday is spinning up the devcontainer. The image was pulled days ago and cached locally. Starting the container should be a purely local operation.&lt;/p&gt;
+&lt;p&gt;It isn&#39;t. The devcontainer&#39;s startup script downloads tooling from Artifactory on every launch: linters, formatters, internal CLI utilities. The script doesn&#39;t check whether the tools are already present from a previous session. It fetches unconditionally. With Artifactory unreachable, the script hangs on the first HTTP request, times out, and exits non-zero. The container refuses to start.&lt;/p&gt;
+&lt;p&gt;The workaround: dig through the startup scripts, comment out every line that contacts Artifactory, and hope the leftover tools from a previous session are sufficient. Some are. The devcontainer comes up in a degraded state with gaps in tooling. Not ideal, but at least there&#39;s a shell.&lt;/p&gt;
+&lt;h2&gt;Nothing builds&lt;/h2&gt;
+&lt;p&gt;With the devcontainer limping, the next step is to build some code. Bazel resolves external dependencies at the beginning of every build by evaluating repository rules declared in &lt;code&gt;MODULE.bazel&lt;/code&gt; (or &lt;code&gt;WORKSPACE&lt;/code&gt;, depending on the repo&#39;s migration status). These rules fetch archives from Artifactory: third-party libraries, internal shared packages, toolchain components.&lt;/p&gt;
+&lt;p&gt;The expectation: targets that don&#39;t depend on anything external should still build. Plenty of code in the repo looks self-contained.&lt;/p&gt;
+&lt;p&gt;The reality: no such targets exist. Even the most fundamental internal libraries have a transitive dependency on a shared data-types package (custom containers, vocabulary types, error handling primitives) distributed as a prebuilt artifact through Artifactory. This package sits at the very bottom of the dependency graph, pulled in by nearly every &lt;code&gt;cc_library&lt;/code&gt; in the repo. Compiling anything, even a small test with two source files, triggers a fetch for this package. With Artifactory down, the build fails during the fetch phase before it even attempts compilation:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;ERROR: An error occurred during the fetch of repository &#39;company_types&#39;:
+   Tried to download https://artifactory.company.dev/bazel-remote/company_types/v3.2.1/...
+   but it failed: connect timed out
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;Bazel does maintain a local repository cache, keyed by the content hash of each repository rule&#39;s inputs (URLs, SHA256 checksums, patches). If a previous build already fetched the exact same dependency version, Bazel can serve it from cache without network access. The shared data-types package hadn&#39;t changed, so in theory its cache entry should still be valid. But the cache only helps if it&#39;s warm. A freshly rebuilt devcontainer, a new machine, a cleaned output directory: any of these mean a cold cache and a mandatory fetch. And for any dependency that &lt;em&gt;did&lt;/em&gt; change since the last successful build (a version bump, a hash update, a new transitive dependency), the cache entry is invalidated regardless.&lt;/p&gt;
+&lt;p&gt;This isn&#39;t a Bazel-specific problem. Bazel&#39;s dependency model makes it explicit (every external dependency is declared and fetched by content hash), but the same fundamental issue exists in any build system that resolves artifacts from a remote store. If that store is unreachable and the local cache is cold or stale, nothing builds.&lt;/p&gt;
+&lt;h2&gt;Tools won&#39;t launch&lt;/h2&gt;
+&lt;p&gt;If compilation is off the table, at least there&#39;s design work. The codebase includes an architecture visualization tool that runs locally, providing an interactive view of module dependencies and ownership boundaries. I used it the day before.&lt;/p&gt;
+&lt;p&gt;Opening it today fails. The tool&#39;s launcher performs a version check against Artifactory on every invocation, fetching metadata to decide whether an update is available before running the locally cached binary. With Artifactory unreachable, the version check times out. The launcher exits before it ever attempts to run the cached copy.&lt;/p&gt;
+&lt;p&gt;No offline fallback. No flag to skip the check. The tool simply doesn&#39;t start.&lt;/p&gt;
+&lt;p&gt;This pattern shows up constantly in internal tooling: a startup routine that contacts a remote service not because the tool genuinely needs fresh data to function, but because someone added an auto-update mechanism and never considered the failure mode. The update check is a hard dependency masquerading as a convenience feature.&lt;/p&gt;
+&lt;h2&gt;Even git commit is blocked&lt;/h2&gt;
+&lt;p&gt;At this point the ambition is minimal: rebase a branch onto &lt;code&gt;main&lt;/code&gt; to resolve some known conflicts, then commit. No build required. Just git operations.&lt;/p&gt;
+&lt;p&gt;The project uses the &lt;code&gt;pre-commit&lt;/code&gt; framework, which manages hook tool versions and installs them on demand. Several of these tools (a code formatter, a static analyzer, a license header checker) are distributed as binaries hosted on Artifactory.&lt;/p&gt;
+&lt;p&gt;The rebase fires pre-commit hooks on every replayed commit. The hook runner attempts to install the configured tool versions. Download fails. Rebase blocked:&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;[ERROR] Failed to install tool for hook &#39;company-format&#39;:
+  Could not fetch https://artifactory.company.dev/tools/company-format/v2.4.0/...
+  Connection timed out
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;The tools had been installed previously and cached in the &lt;code&gt;pre-commit&lt;/code&gt; environment directory. But &lt;code&gt;pre-commit&lt;/code&gt;&#39;s cache is version-pinned: if the hook configuration specifies a version that differs from what&#39;s cached, it discards the old environment and re-downloads. Someone had bumped the formatter version two days earlier. My local cache held v2.3.1. The hooks demanded v2.4.0. Artifactory was the only source, and it was gone.&lt;/p&gt;
+&lt;p&gt;For a plain &lt;code&gt;git commit&lt;/code&gt;, there is at least a workaround:&lt;/p&gt;
+&lt;pre class=&quot;language-bash&quot;&gt;&lt;code class=&quot;language-bash&quot;&gt;&lt;span class=&quot;token function&quot;&gt;git&lt;/span&gt; commit --no-verify &lt;span class=&quot;token parameter variable&quot;&gt;-m&lt;/span&gt; &lt;span class=&quot;token string&quot;&gt;&quot;WIP: hooks skipped during outage&quot;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;This skips &lt;em&gt;all&lt;/em&gt; hooks: not just the broken download, but also the ones that catch real problems (trailing whitespace, merge conflict markers, credential scanning). There is no way to selectively disable only the hooks whose tools are unavailable while keeping the local-only checks active. It&#39;s all or nothing.&lt;/p&gt;
+&lt;p&gt;For &lt;code&gt;git rebase&lt;/code&gt;, the situation is worse. I could not find an equivalent &lt;code&gt;--no-verify&lt;/code&gt; escape hatch. The rebase fires hooks on every replayed commit, and with no way to bypass the failing downloads, rebasing was simply impossible.&lt;/p&gt;
+&lt;h2&gt;The graph nobody drew&lt;/h2&gt;
+&lt;p&gt;Strip away the details of each individual failure and the picture is simple:&lt;/p&gt;
+&lt;img src=&quot;https://blog.offclock.dev/posts/img/spof-dependency-graph.svg&quot; alt=&quot;Diagram showing five developer workflows (devcontainer startup, bazel build, architecture tool, pre-commit hooks, CI pipeline) each with a dashed red arrow pointing to a single Artifactory service marked as unreachable. Five independent workflows, one backend.&quot;&gt;
+&lt;p&gt;Five independent workflows. One backend. The failure mode is identical in each case: a synchronous, blocking request to a remote service with no fallback, no graceful degradation, and no offline mode.&lt;/p&gt;
+&lt;p&gt;Nobody designed it this way. The coupling accumulated through years of reasonable, isolated decisions:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Distributing tools through Artifactory is convenient. It provides versioning, access control, and a single source of truth.&lt;/li&gt;
+&lt;li&gt;Adding a freshness check to tool launchers seems responsible. Nobody wants to run a stale linter.&lt;/li&gt;
+&lt;li&gt;Pinning &lt;code&gt;pre-commit&lt;/code&gt; hooks to exact artifact versions ensures reproducibility across developer machines.&lt;/li&gt;
+&lt;li&gt;Fetching Bazel dependencies from a central artifact store is how Bazel is designed to work.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Each decision was sound in isolation. In aggregate, they created a system where one service going down makes every other workflow non-functional. Not degraded, not slower: completely dead. The definition of a single point of failure.&lt;/p&gt;
+&lt;h2&gt;The recovery and its aftershocks&lt;/h2&gt;
+&lt;p&gt;Artifactory was restored Friday evening from a backup. Whether the outage was caused by a technical failure or a security incident was never clearly communicated; the recovery took priority. The backup was three days old. That gap had consequences.&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Lost artifacts.&lt;/strong&gt; Every package published between the backup snapshot and the outage was gone. Internal libraries that teams had built, tested, and released during those three days simply no longer existed in the store.&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Dangling references.&lt;/strong&gt; &lt;code&gt;MODULE.bazel&lt;/code&gt; files and lockfiles across the repo pointed to artifact versions that no longer existed. Each of these had to be identified and either rebuilt from source and re-published, or rolled back to a version the restored backup still contained.&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Stalled merge queues.&lt;/strong&gt; CI builds that depended on recently published packages failed with &amp;quot;artifact not found&amp;quot; errors. Merge queues backed up while teams scrambled to re-publish their dependencies in the correct order (respecting the dependency graph between packages).&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Cache mistrust.&lt;/strong&gt; Developers questioned whether their local Bazel caches were consistent with the restored Artifactory state. Many wiped their repository caches entirely, which meant re-downloading everything from a now heavily loaded, freshly restored instance.&lt;/p&gt;
+&lt;p&gt;The outage itself lasted barely a day, but the stale backup turned it into roughly a week of reduced velocity when accounting for the recovery tail.&lt;/p&gt;
+&lt;h2&gt;Building for resilience&lt;/h2&gt;
+&lt;p&gt;Artifact repositories go down. The question is not how to prevent every outage; it is how to keep developers productive when it happens.&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Offline-capable devcontainers.&lt;/strong&gt; Bake essential tooling into the container image itself rather than downloading it at startup. If a startup script fetches tools, it should check for existing binaries first and tolerate download failures with a warning rather than an exit. Running yesterday&#39;s formatter version is better than not starting the container at all.&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Pre-fetched Bazel dependencies.&lt;/strong&gt; Bazel supports vendoring external dependencies into the repository (&lt;code&gt;bazel vendor&lt;/code&gt;), and &lt;code&gt;bazel fetch //...&lt;/code&gt; can warm the repository cache ahead of time. A CI job that periodically fetches all external dependencies and either vendors them or populates a shared cache ensures that developers can build without live access to the artifact store. The tradeoff is repository size and freshness, but for critical-path dependencies (like the shared data-types package at the bottom of the graph) it is worth it.&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Fault-tolerant tool launchers.&lt;/strong&gt; Any tool that performs a version check on startup should treat the check as best-effort. If the remote is unreachable within a short timeout, run the cached version and log a warning. Running a slightly outdated binary is vastly preferable to running nothing.&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Resilient pre-commit hooks.&lt;/strong&gt; &lt;code&gt;pre-commit&lt;/code&gt;&#39;s caching can be made more durable by pinning hooks to commit SHAs rather than mutable version tags, reducing cache invalidation from tag drift. For critical hooks, the tool binaries can be committed directly into the repository, eliminating the runtime download entirely. This costs repository space, but it means &lt;code&gt;git commit&lt;/code&gt; never depends on network access.&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Graceful CI degradation.&lt;/strong&gt; Build pipelines should distinguish between &amp;quot;artifact temporarily unavailable&amp;quot; and &amp;quot;build genuinely broken.&amp;quot; Fetch timeouts should trigger retries with backoff, and merge queues should be able to pause and drain gracefully rather than failing every enqueued PR.&lt;/p&gt;
+&lt;p&gt;None of these measures are exotic. They are the difference between a system designed only for the steady state and one that plans for the day the steady state breaks.&lt;/p&gt;
+&lt;h2&gt;Shutting the laptop&lt;/h2&gt;
+&lt;p&gt;The most productive thing I could do during the outage was close my laptop and take the day off. That is the honest conclusion of attempting four increasingly basic tasks (starting a container, building code, opening a tool, committing a change) and failing at all four for the same underlying reason.&lt;/p&gt;
+&lt;p&gt;I had never spent time thinking about this scenario, and the extent of the damage was genuinely surprising. The outage did not reveal a bug in any individual system. It revealed an architecture: one where every layer of the development workflow had independently decided to depend on the same remote service, and not one of them had a plan for when it was gone.&lt;/p&gt;
+</content>
+  </entry>
+  <entry>
+    <title>What the GitHub Contribution Graph Actually Measures</title>
+    <link href="https://blog.offclock.dev/posts/github-heatmap-interpretation/" />
+    <updated>2026-10-25T00:00:00Z</updated>
+    <id>https://blog.offclock.dev/posts/github-heatmap-interpretation/</id>
+    <summary>The contribution graph reflects which commits reach the default branch and when, not how much work a developer does, and a clean Git workflow can make it look sparse.</summary>
+    <content type="html">&lt;p&gt;The contribution graph reflects which commits reach the default branch and when, not how much work a developer does, and a clean Git workflow can make it look sparse.&lt;/p&gt;
+&lt;h2&gt;Background&lt;/h2&gt;
+&lt;p&gt;I keep my Git history tidy. Instead of stacking “address review comments” commits on a branch, I usually amend the existing work and force-push:&lt;/p&gt;
+&lt;pre class=&quot;language-bash&quot;&gt;&lt;code class=&quot;language-bash&quot;&gt;&lt;span class=&quot;token function&quot;&gt;git&lt;/span&gt; reset &lt;span class=&quot;token parameter variable&quot;&gt;--soft&lt;/span&gt; origin/main     &lt;span class=&quot;token comment&quot;&gt;# or the branch&#39;s merge base&lt;/span&gt;
+&lt;span class=&quot;token function&quot;&gt;git&lt;/span&gt; &lt;span class=&quot;token function&quot;&gt;add&lt;/span&gt; &lt;span class=&quot;token parameter variable&quot;&gt;-A&lt;/span&gt;
+&lt;span class=&quot;token function&quot;&gt;git&lt;/span&gt; commit &lt;span class=&quot;token parameter variable&quot;&gt;-m&lt;/span&gt; &lt;span class=&quot;token string&quot;&gt;&quot;Add retry handling to the sensor adapter&quot;&lt;/span&gt;
+&lt;span class=&quot;token function&quot;&gt;git&lt;/span&gt; push --force-with-lease&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;Before opening a pull request I squash the branch into one or two commits. The result is a history that is easy to review, bisect and revert.&lt;/p&gt;
+&lt;p&gt;While comparing contribution graphs at work, I noticed mine looked very different from my colleagues’: pale, with long empty stretches. Checking those stretches against my actual activity showed the work was there. The graph simply wasn’t recording it.&lt;/p&gt;
+&lt;h2&gt;What counts as a contribution&lt;/h2&gt;
+&lt;p&gt;According to GitHub’s documentation, a commit appears in the graph only if all of the following hold:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;It is authored with an email address that is linked to your GitHub account.&lt;/li&gt;
+&lt;li&gt;It is reachable from the repository’s default branch (or the &lt;code&gt;gh-pages&lt;/code&gt; branch).&lt;/li&gt;
+&lt;li&gt;It sits in a repository you have access to, and, for private repositories, you have enabled showing private contributions on your profile.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Opened pull requests, issues and reviews also count as contributions. Commits that only exist on a feature branch do not, until they are merged.&lt;/p&gt;
+&lt;p&gt;Please verify the details against the current GitHub docs, as the rules have been adjusted over the years.&lt;/p&gt;
+&lt;h2&gt;How common Git workflows affect the graph&lt;/h2&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;Practice&lt;/th&gt;
+&lt;th&gt;Effect on the graph&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;Many small commits, merged with a merge commit&lt;/td&gt;
+&lt;td&gt;Every commit is kept, so activity shows up on the days the commits were authored&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Rebase and merge&lt;/td&gt;
+&lt;td&gt;Commits keep their author dates and appear individually&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Squash and merge&lt;/td&gt;
+&lt;td&gt;One commit lands on the default branch, typically dated at merge time&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Local squash or &lt;code&gt;reset --soft&lt;/code&gt; before pushing&lt;/td&gt;
+&lt;td&gt;Intermediate commits never reach a remote branch, so they are never counted&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Force-push over an existing branch&lt;/td&gt;
+&lt;td&gt;Replaced commits become unreachable and are never counted&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;Long-lived feature branch&lt;/td&gt;
+&lt;td&gt;Nothing is counted until the merge, then everything lands at once&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;The graph therefore records integration events, not effort. Squashing five days of work into one commit produces one contribution on one day.&lt;/p&gt;
+&lt;h2&gt;Why a dense graph is ambiguous&lt;/h2&gt;
+&lt;p&gt;A dark graph is consistent with high output, but it is equally consistent with other causes:&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Commits that are never squashed, such as WIP commits, typo fixes and formatting changes.&lt;/li&gt;
+&lt;li&gt;A team convention of merging with merge commits, which preserves every intermediate commit.&lt;/li&gt;
+&lt;li&gt;Direct pushes to the default branch.&lt;/li&gt;
+&lt;li&gt;Automated or mechanical commits, for example from bots or generated code.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Similarly, a sparse graph can hide a lot of work: debugging, design discussions, investigation, reviews outside GitHub, or a fix that took two weeks to find and consists of three changed lines. Work in tools other than GitHub does not appear at all.&lt;/p&gt;
+&lt;h2&gt;The metric problem&lt;/h2&gt;
+&lt;p&gt;The graph was designed as a personal activity overview, not as a performance measure. Using it as one runs into Goodhart’s law: once a measure becomes a target, it stops being a good measure. If people treat dense graphs as a sign of productivity, the incentive is to commit often, avoid squashing and avoid rewriting history, which is the opposite of what many teams consider good practice.&lt;/p&gt;
+&lt;p&gt;It is also worth being honest about the effect this has on perception. I found myself being impressed by colleagues’ graphs before I understood how they are computed, and I doubted my own performance when mine looked different. A signal with this much noise should not influence how we judge each other.&lt;/p&gt;
+&lt;p&gt;So what does the heatmap actually tell you? At best, a diffuse mix of activity frequency and commit hygiene. A dense graph means someone integrates to the default branch often; a sparse one means they don&#39;t. Neither says anything reliable about the volume or quality of work behind those integrations.&lt;/p&gt;
+&lt;h2&gt;Recommendations&lt;/h2&gt;
+&lt;ol&gt;
+&lt;li&gt;Keep your history clean if you value it. A green graph is not a good reason to change your workflow.&lt;/li&gt;
+&lt;li&gt;Do not use the graph to evaluate colleagues or yourself. Outcomes are better indicators: problems solved, review quality, reliability of shipped changes and knowledge shared with the team.&lt;/li&gt;
+&lt;li&gt;If you have to compare activity, use data that matches the question, such as merged pull requests, review turnaround or lead time, and interpret them with context.&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h2&gt;Conclusion&lt;/h2&gt;
+&lt;p&gt;The contribution graph shows which commits were merged to the default branch and on which day. It does not show how much work was done. Developers who squash and rewrite history will look less active than those who do not, so the graph is a poor basis for any comparison between people.&lt;/p&gt;
 </content>
   </entry>
 </feed>

@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Single Point of Failure — offclock / writing</title>
+  <meta name="description" content="How an artifact repository outage paralyzed every developer workflow in a Bazel monorepo, from spinning up a devcontainer to making a commit.">
+  <meta name="author" content="offclock">
+  <link rel="canonical" href="https://blog.offclock.dev/posts/single-point-of-failure/">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="/apple-touch-icon.png">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+
+  <!-- RSS -->
+  <link rel="alternate" type="application/atom+xml" title="offclock / writing" href="/feed.xml">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="Single Point of Failure">
+  <meta property="og:description" content="How an artifact repository outage paralyzed every developer workflow in a Bazel monorepo, from spinning up a devcontainer to making a commit.">
+  <meta property="og:url" content="https://blog.offclock.dev/posts/single-point-of-failure/">
+  <meta property="og:image" content="https://blog.offclock.dev/og-image.png">
+  <meta property="og:site_name" content="offclock / writing">
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Single Point of Failure">
+  <meta name="twitter:description" content="How an artifact repository outage paralyzed every developer workflow in a Bazel monorepo, from spinning up a devcontainer to making a commit.">
+  <meta name="twitter:image" content="https://blog.offclock.dev/og-image.png">
+
+  
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BlogPosting",
+    "headline": "Single Point of Failure",
+    "description": "How an artifact repository outage paralyzed every developer workflow in a Bazel monorepo, from spinning up a devcontainer to making a commit.",
+    "datePublished": "2026-09-06T00:00:00.000Z",
+    "author": {
+      "@type": "Person",
+      "name": "offclock",
+      "url": "https://offclock.dev"
+    },
+    "publisher": {
+      "@type": "Person",
+      "name": "offclock",
+      "url": "https://offclock.dev"
+    },
+    "url": "https://blog.offclock.dev/posts/single-point-of-failure/",
+    "mainEntityOfPage": "https://blog.offclock.dev/posts/single-point-of-failure/"
+  }
+  </script>
+  
+
+  <link rel="stylesheet" href="/css/style.css">
+  
+  <script>
+  (function () {
+    var endpoint = "https://offclock-analytics.offclock.workers.dev/event";
+    var page = location.pathname;
+    var start = Date.now();
+    var hidden = 0;
+    var hiddenAt = 0;
+
+    function send(data) {
+      try { navigator.sendBeacon(endpoint, new Blob([JSON.stringify(data)], { type: "text/plain" })); } catch (e) {}
+    }
+
+    send({ t: "pv", p: page, r: document.referrer });
+
+    document.addEventListener("visibilitychange", function () {
+      if (document.hidden) {
+        hiddenAt = Date.now();
+        sendDuration();
+      } else if (hiddenAt) {
+        hidden += Date.now() - hiddenAt;
+        hiddenAt = 0;
+      }
+    });
+    window.addEventListener("pagehide", sendDuration);
+
+    function sendDuration() {
+      var h = hidden + (hiddenAt ? Date.now() - hiddenAt : 0);
+      var dur = Math.max(0, Math.round((Date.now() - start - h) / 1000));
+      send({ t: "leave", p: page, d: dur });
+    }
+  })();
+  </script>
+  
+</head>
+<body>
+  <header>
+    <a href="/" class="site-logo"><img src="/logo.svg" alt="offclock / writing"></a>
+    <hr class="site-divider">
+    <nav class="site-nav">
+      <a href="/">writing</a>
+    </nav>
+  </header>
+  <main>
+    <article class="post">
+  <h1>Single Point of Failure</h1>
+  <div class="post-meta">
+    <time datetime="2026-09-06T00:00:00.000Z">SEP 06, 2026</time>
+    <span class="reading-time">10 min read</span>
+  </div>
+  <p><em>Our artifact repository went down on a Thursday afternoon. By Friday evening it was restored from a three-day-old backup, but in between: building was impossible, tools wouldn't start, and even committing code was blocked. Every developer workflow, through seemingly independent paths, depended on the same service.</em></p>
+<h2>The infrastructure</h2>
+<p>The setup: a C++ monorepo built with Bazel, devcontainers for local development, Artifactory as the central artifact repository, and GitHub Actions for CI. On a normal day the pieces fit together seamlessly. Artifactory serves Bazel's external dependencies, hosts tooling for the devcontainers, stores pre-commit hook binaries, and caches build artifacts for CI.</p>
+<p>Then Artifactory went down. Not degraded, not slow: unreachable. Every HTTP request to it timed out. What followed was an education in how completely a single service can embed itself into every layer of a development workflow.</p>
+<h2>The devcontainer won't start</h2>
+<p>The first step of any workday is spinning up the devcontainer. The image was pulled days ago and cached locally. Starting the container should be a purely local operation.</p>
+<p>It isn't. The devcontainer's startup script downloads tooling from Artifactory on every launch: linters, formatters, internal CLI utilities. The script doesn't check whether the tools are already present from a previous session. It fetches unconditionally. With Artifactory unreachable, the script hangs on the first HTTP request, times out, and exits non-zero. The container refuses to start.</p>
+<p>The workaround: dig through the startup scripts, comment out every line that contacts Artifactory, and hope the leftover tools from a previous session are sufficient. Some are. The devcontainer comes up in a degraded state with gaps in tooling. Not ideal, but at least there's a shell.</p>
+<h2>Nothing builds</h2>
+<p>With the devcontainer limping, the next step is to build some code. Bazel resolves external dependencies at the beginning of every build by evaluating repository rules declared in <code>MODULE.bazel</code> (or <code>WORKSPACE</code>, depending on the repo's migration status). These rules fetch archives from Artifactory: third-party libraries, internal shared packages, toolchain components.</p>
+<p>The expectation: targets that don't depend on anything external should still build. Plenty of code in the repo looks self-contained.</p>
+<p>The reality: no such targets exist. Even the most fundamental internal libraries have a transitive dependency on a shared data-types package (custom containers, vocabulary types, error handling primitives) distributed as a prebuilt artifact through Artifactory. This package sits at the very bottom of the dependency graph, pulled in by nearly every <code>cc_library</code> in the repo. Compiling anything, even a small test with two source files, triggers a fetch for this package. With Artifactory down, the build fails during the fetch phase before it even attempts compilation:</p>
+<pre><code>ERROR: An error occurred during the fetch of repository 'company_types':
+   Tried to download https://artifactory.company.dev/bazel-remote/company_types/v3.2.1/...
+   but it failed: connect timed out
+</code></pre>
+<p>Bazel does maintain a local repository cache, keyed by the content hash of each repository rule's inputs (URLs, SHA256 checksums, patches). If a previous build already fetched the exact same dependency version, Bazel can serve it from cache without network access. The shared data-types package hadn't changed, so in theory its cache entry should still be valid. But the cache only helps if it's warm. A freshly rebuilt devcontainer, a new machine, a cleaned output directory: any of these mean a cold cache and a mandatory fetch. And for any dependency that <em>did</em> change since the last successful build (a version bump, a hash update, a new transitive dependency), the cache entry is invalidated regardless.</p>
+<p>This isn't a Bazel-specific problem. Bazel's dependency model makes it explicit (every external dependency is declared and fetched by content hash), but the same fundamental issue exists in any build system that resolves artifacts from a remote store. If that store is unreachable and the local cache is cold or stale, nothing builds.</p>
+<h2>Tools won't launch</h2>
+<p>If compilation is off the table, at least there's design work. The codebase includes an architecture visualization tool that runs locally, providing an interactive view of module dependencies and ownership boundaries. I used it the day before.</p>
+<p>Opening it today fails. The tool's launcher performs a version check against Artifactory on every invocation, fetching metadata to decide whether an update is available before running the locally cached binary. With Artifactory unreachable, the version check times out. The launcher exits before it ever attempts to run the cached copy.</p>
+<p>No offline fallback. No flag to skip the check. The tool simply doesn't start.</p>
+<p>This pattern shows up constantly in internal tooling: a startup routine that contacts a remote service not because the tool genuinely needs fresh data to function, but because someone added an auto-update mechanism and never considered the failure mode. The update check is a hard dependency masquerading as a convenience feature.</p>
+<h2>Even git commit is blocked</h2>
+<p>At this point the ambition is minimal: rebase a branch onto <code>main</code> to resolve some known conflicts, then commit. No build required. Just git operations.</p>
+<p>The project uses the <code>pre-commit</code> framework, which manages hook tool versions and installs them on demand. Several of these tools (a code formatter, a static analyzer, a license header checker) are distributed as binaries hosted on Artifactory.</p>
+<p>The rebase fires pre-commit hooks on every replayed commit. The hook runner attempts to install the configured tool versions. Download fails. Rebase blocked:</p>
+<pre><code>[ERROR] Failed to install tool for hook 'company-format':
+  Could not fetch https://artifactory.company.dev/tools/company-format/v2.4.0/...
+  Connection timed out
+</code></pre>
+<p>The tools had been installed previously and cached in the <code>pre-commit</code> environment directory. But <code>pre-commit</code>'s cache is version-pinned: if the hook configuration specifies a version that differs from what's cached, it discards the old environment and re-downloads. Someone had bumped the formatter version two days earlier. My local cache held v2.3.1. The hooks demanded v2.4.0. Artifactory was the only source, and it was gone.</p>
+<p>For a plain <code>git commit</code>, there is at least a workaround:</p>
+<pre class="language-bash"><code class="language-bash"><span class="token function">git</span> commit --no-verify <span class="token parameter variable">-m</span> <span class="token string">"WIP: hooks skipped during outage"</span></code></pre>
+<p>This skips <em>all</em> hooks: not just the broken download, but also the ones that catch real problems (trailing whitespace, merge conflict markers, credential scanning). There is no way to selectively disable only the hooks whose tools are unavailable while keeping the local-only checks active. It's all or nothing.</p>
+<p>For <code>git rebase</code>, the situation is worse. I could not find an equivalent <code>--no-verify</code> escape hatch. The rebase fires hooks on every replayed commit, and with no way to bypass the failing downloads, rebasing was simply impossible.</p>
+<h2>The graph nobody drew</h2>
+<p>Strip away the details of each individual failure and the picture is simple:</p>
+<img src="/posts/img/spof-dependency-graph.svg" alt="Diagram showing five developer workflows (devcontainer startup, bazel build, architecture tool, pre-commit hooks, CI pipeline) each with a dashed red arrow pointing to a single Artifactory service marked as unreachable. Five independent workflows, one backend.">
+<p>Five independent workflows. One backend. The failure mode is identical in each case: a synchronous, blocking request to a remote service with no fallback, no graceful degradation, and no offline mode.</p>
+<p>Nobody designed it this way. The coupling accumulated through years of reasonable, isolated decisions:</p>
+<ul>
+<li>Distributing tools through Artifactory is convenient. It provides versioning, access control, and a single source of truth.</li>
+<li>Adding a freshness check to tool launchers seems responsible. Nobody wants to run a stale linter.</li>
+<li>Pinning <code>pre-commit</code> hooks to exact artifact versions ensures reproducibility across developer machines.</li>
+<li>Fetching Bazel dependencies from a central artifact store is how Bazel is designed to work.</li>
+</ul>
+<p>Each decision was sound in isolation. In aggregate, they created a system where one service going down makes every other workflow non-functional. Not degraded, not slower: completely dead. The definition of a single point of failure.</p>
+<h2>The recovery and its aftershocks</h2>
+<p>Artifactory was restored Friday evening from a backup. Whether the outage was caused by a technical failure or a security incident was never clearly communicated; the recovery took priority. The backup was three days old. That gap had consequences.</p>
+<p><strong>Lost artifacts.</strong> Every package published between the backup snapshot and the outage was gone. Internal libraries that teams had built, tested, and released during those three days simply no longer existed in the store.</p>
+<p><strong>Dangling references.</strong> <code>MODULE.bazel</code> files and lockfiles across the repo pointed to artifact versions that no longer existed. Each of these had to be identified and either rebuilt from source and re-published, or rolled back to a version the restored backup still contained.</p>
+<p><strong>Stalled merge queues.</strong> CI builds that depended on recently published packages failed with &quot;artifact not found&quot; errors. Merge queues backed up while teams scrambled to re-publish their dependencies in the correct order (respecting the dependency graph between packages).</p>
+<p><strong>Cache mistrust.</strong> Developers questioned whether their local Bazel caches were consistent with the restored Artifactory state. Many wiped their repository caches entirely, which meant re-downloading everything from a now heavily loaded, freshly restored instance.</p>
+<p>The outage itself lasted barely a day, but the stale backup turned it into roughly a week of reduced velocity when accounting for the recovery tail.</p>
+<h2>Building for resilience</h2>
+<p>Artifact repositories go down. The question is not how to prevent every outage; it is how to keep developers productive when it happens.</p>
+<p><strong>Offline-capable devcontainers.</strong> Bake essential tooling into the container image itself rather than downloading it at startup. If a startup script fetches tools, it should check for existing binaries first and tolerate download failures with a warning rather than an exit. Running yesterday's formatter version is better than not starting the container at all.</p>
+<p><strong>Pre-fetched Bazel dependencies.</strong> Bazel supports vendoring external dependencies into the repository (<code>bazel vendor</code>), and <code>bazel fetch //...</code> can warm the repository cache ahead of time. A CI job that periodically fetches all external dependencies and either vendors them or populates a shared cache ensures that developers can build without live access to the artifact store. The tradeoff is repository size and freshness, but for critical-path dependencies (like the shared data-types package at the bottom of the graph) it is worth it.</p>
+<p><strong>Fault-tolerant tool launchers.</strong> Any tool that performs a version check on startup should treat the check as best-effort. If the remote is unreachable within a short timeout, run the cached version and log a warning. Running a slightly outdated binary is vastly preferable to running nothing.</p>
+<p><strong>Resilient pre-commit hooks.</strong> <code>pre-commit</code>'s caching can be made more durable by pinning hooks to commit SHAs rather than mutable version tags, reducing cache invalidation from tag drift. For critical hooks, the tool binaries can be committed directly into the repository, eliminating the runtime download entirely. This costs repository space, but it means <code>git commit</code> never depends on network access.</p>
+<p><strong>Graceful CI degradation.</strong> Build pipelines should distinguish between &quot;artifact temporarily unavailable&quot; and &quot;build genuinely broken.&quot; Fetch timeouts should trigger retries with backoff, and merge queues should be able to pause and drain gracefully rather than failing every enqueued PR.</p>
+<p>None of these measures are exotic. They are the difference between a system designed only for the steady state and one that plans for the day the steady state breaks.</p>
+<h2>Shutting the laptop</h2>
+<p>The most productive thing I could do during the outage was close my laptop and take the day off. That is the honest conclusion of attempting four increasingly basic tasks (starting a container, building code, opening a tool, committing a change) and failing at all four for the same underlying reason.</p>
+<p>I had never spent time thinking about this scenario, and the extent of the damage was genuinely surprising. The outage did not reveal a bug in any individual system. It revealed an architecture: one where every layer of the development workflow had independently decided to depend on the same remote service, and not one of them had a plan for when it was gone.</p>
+
+  
+  <div class="post-tags">
+    <a href="/tags/build-systems/" class="tag">Build Systems</a>
+    <a href="/tags/infrastructure/" class="tag">Infrastructure</a>
+  </div>
+  
+</article>
+<a href="/" class="back-link">&larr; back</a>
+
+  </main>
+  <footer>
+    <hr class="site-divider">
+    <p>&copy; offclock      &middot;      <a href="/feed.xml">rss</a></p>
+  </footer>
+  <div class="lightbox-overlay" id="lightbox">
+    <img src="" alt="">
+  </div>
+  <script>
+    (function () {
+      var overlay = document.getElementById("lightbox");
+      var overlayImg = overlay.querySelector("img");
+      document.querySelectorAll("article.post img[src$='.svg']").forEach(function (img) {
+        img.addEventListener("click", function () {
+          overlayImg.src = img.src;
+          overlayImg.alt = img.alt;
+          overlay.classList.add("active");
+        });
+      });
+      overlay.addEventListener("click", function () {
+        overlay.classList.remove("active");
+      });
+    })();
+    document.querySelectorAll("pre").forEach(function (pre) {
+      var btn = document.createElement("button");
+      btn.className = "copy-btn";
+      btn.textContent = "copy";
+      btn.addEventListener("click", function () {
+        var code = pre.querySelector("code");
+        navigator.clipboard.writeText((code || pre).textContent).then(function () {
+          btn.textContent = "copied";
+          setTimeout(function () { btn.textContent = "copy"; }, 1500);
+        });
+      });
+      pre.style.position = "relative";
+      pre.appendChild(btn);
+    });
+  </script>
+</body>
+</html>
