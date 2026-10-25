@@ -834,7 +834,7 @@ duplication itself go away.&lt;/li&gt;
     <updated>2026-10-25T00:00:00Z</updated>
     <id>https://blog.offclock.dev/posts/github-heatmap-interpretation/</id>
     <summary>The contribution graph reflects which commits reach the default branch and when, not how much work a developer does, and a clean Git workflow can make it look sparse.</summary>
-    <content type="html">&lt;p&gt;The contribution graph reflects which commits reach the default branch and when, not how much work a developer does, and a clean Git workflow can make it look sparse.&lt;/p&gt;
+    <content type="html">&lt;p&gt;&lt;strong&gt;tl;dr:&lt;/strong&gt; The contribution graph reflects which commits reach the default branch and when, not how much work a developer does, and a clean Git workflow can make it look sparse.&lt;/p&gt;
 &lt;h2&gt;Background&lt;/h2&gt;
 &lt;p&gt;I keep my Git history tidy. Instead of stacking “address review comments” commits on a branch, I usually amend the existing work and force-push:&lt;/p&gt;
 &lt;pre class=&quot;language-bash&quot;&gt;&lt;code class=&quot;language-bash&quot;&gt;&lt;span class=&quot;token function&quot;&gt;git&lt;/span&gt; reset &lt;span class=&quot;token parameter variable&quot;&gt;--soft&lt;/span&gt; origin/main     &lt;span class=&quot;token comment&quot;&gt;# or the branch&#39;s merge base&lt;/span&gt;
