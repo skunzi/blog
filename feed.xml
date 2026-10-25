@@ -900,7 +900,7 @@ duplication itself go away.&lt;/li&gt;
 &lt;h2&gt;The metric problem&lt;/h2&gt;
 &lt;p&gt;The graph was designed as a personal activity overview, not as a performance measure. Using it as one runs into Goodhart’s law: once a measure becomes a target, it stops being a good measure. If people treat dense graphs as a sign of productivity, the incentive is to commit often, avoid squashing and avoid rewriting history, which is the opposite of what many teams consider good practice.&lt;/p&gt;
 &lt;p&gt;It is also worth being honest about the effect this has on perception. I found myself being impressed by colleagues’ graphs before I understood how they are computed, and I doubted my own performance when mine looked different. A signal with this much noise should not influence how we judge each other.&lt;/p&gt;
-&lt;p&gt;So what does the heatmap actually tell you? At best, a diffuse mix of activity frequency and commit hygiene. A dense graph means someone integrates to the default branch often; a sparse one means they don&#39;t. Neither says anything reliable about the volume or quality of work behind those integrations.&lt;/p&gt;
+&lt;p&gt;So what does the heatmap actually tell you? At best, a diffuse mix of activity frequency and commit hygiene. A dense graph means someone integrates many commits to the default branch; a sparse one means they don&#39;t. Neither says anything reliable about the volume or quality of work behind those integrations.&lt;/p&gt;
 &lt;h2&gt;Recommendations&lt;/h2&gt;
 &lt;ol&gt;
 &lt;li&gt;Keep your history clean if you value it. A green graph is not a good reason to change your workflow.&lt;/li&gt;
